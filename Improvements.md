@@ -8,15 +8,23 @@ result, and what is still worth trying. Parked here for future work.
 | Sample | Type | Result |
 |---|---|---|
 | `sample.png` | digital screenshot | exact |
-| `Screenshot …20.11.58` | printed book scan | exact |
-| `Screenshot …20.12.10` | printed book scan | exact |
+| `Screenshot …20.11.58` / `…20.12.10` | printed book scans | exact |
 | `Screenshot …20.13.58` | two stacked puzzles | both exact |
-| `492637750…jpg` | newspaper photo | ~78/81 (only top row; faint grey clues) |
+| `0-sudoku.jpg` | photo of web printout | exact |
+| `Sudoku.jpg` | ~30° rotated torn clipping | exact |
+| `30be7414…jpg` | 4 puzzles/page, colored bg | all 4 exact |
+| `sudoku-evil-5.jpg` | 4 puzzles/page + outer frame | all 4 exact (frame filtered) |
+| `s-l1200.png` | 2 puzzles/page | exact |
+| `sudoku_solved.png` | puzzle + solution side-by-side | puzzle exact (solution suppressed) |
+| `sudoku-warped-example.png` | warped + deskewed side-by-side | both exact |
+| `492637750…jpg` | newspaper photo | ~78/81 (faint grey clues) |
 | `492637753…jpg` | newspaper photo | ~88% |
-| `492637751…jpg` | newspaper photo | ~65% (perspective) |
+| `492637751…jpg` | newspaper photo | ~65% (perspective straddle) |
+| `v4-460px…jpg` | colored grid + pencil occlusion | **not read** (warp shear → filtered, no output) |
 
-All 6 regression tests pass (`tests/test_pipeline.py`). Imperfect grids are flagged by
-the row/col/box validity warnings in `validate.py`.
+13 regression tests pass (`tests/test_pipeline.py`). Imperfect grids are flagged by the
+row/col/box validity warnings in `validate.py`; grids with ≥10 conflicts (page frames,
+unrecoverable warps) are dropped instead of emitting garbage.
 
 ---
 
@@ -74,22 +82,50 @@ can't be mistaken for the extent. 751 rows 4/6/9 became exact.
 
 ---
 
+### 7. Multi-puzzle pages + frame/garbage suppression
+**Why:** new samples include 4-per-page and 2-per-page layouts, a puzzle+solution pair,
+and a warped+clean pair. Two problems surfaced:
+- A 4-per-page sheet has a rounded **outer page border** that is the largest square
+  contour. The old `_dedup` used that frame's large radius for center-proximity, so all
+  4 inner grids fell within "half radius" and were suppressed → only the frame survived
+  (garbage). → `_dedup` now only merges **similar-size** concentric borders (inner vs
+  outer line of one grid), so a big frame can't swallow the smaller distinct grids.
+- That keeps the frame itself as an extra candidate. Trying to drop it by "encloses a
+  smaller candidate" was **wrong**: a normal grid legitimately encloses its own 3×3
+  boxes (detected as squares), so any enclosure rule deletes real grids (broke 751 and
+  the warped/clean pair). → Instead, suppress at the **output** level: a frame warped
+  across 4 grids yields many row/col/box conflicts (frame = 17, v4 shear = 25) whereas
+  real puzzles have ≤6. `cli.MAX_CONFLICTS = 10` drops these without emitting garbage.
+
+Spurious sub-squares (3×3 boxes, junk) are harmless: they warp to near-empty grids and
+fail the `MIN_CLUES = 17` filter.
+
 ## What was tried and reverted
 
 - **Per-band (top/mid/bottom) x-boundaries** to track tilted vertical lines: ~0 extra
   gain over global box-anchored boundaries; removed for simplicity.
 - **Digit-height shape gate** (reject squat components as smudges): dropped the small
   digital-theme digits (height ratio ~0.22 of the cell); removed.
+- **Illumination flattening in `binarize`** (divide-by-background, then black-hat) to
+  fix `v4`'s colored checkerboard cells: it cleaned v4's binary, but v4 still failed on
+  the warp shear (the real blocker), and the flattening erased `492637751`'s faint
+  low-contrast digits (clues 24 → 11, dropped below `MIN_CLUES`). Net negative → reverted
+  to plain auto-polarity Otsu. v4 needs the warp fix, not better binarization.
 
 ---
 
 ## What still can be tried
 
-1. **Homography re-warp from grid-line intersections (highest value for 751).**
+1. **Homography re-warp from grid-line intersections (highest value for 751 AND v4).**
    Detect the full 10×10 line lattice, intersect to get precise inner corners, and
-   re-warp from those instead of the contour hull. Fixes the sub-cell perspective drift
-   that makes top-band digits straddle a boundary (current 751 failure). Isolated to
-   `detect.py`. Risk: must keep clean-case warps intact.
+   re-warp from those instead of the contour hull/minAreaRect. Fixes both remaining
+   failures:
+   - **751**: sub-cell perspective drift makes top-band digits straddle a boundary.
+   - **v4**: a **pencil occluding the grid** connects to the border in the line mask, so
+     the contour (and its hull and minAreaRect) balloons the bottom-right corner out to
+     the pencil → the warp is a sheared parallelogram, unreadable. The lattice lines are
+     not affected by the pencil, so intersecting them recovers true corners.
+   Isolated to `detect.py`. Risk: must keep the 11 clean-case warps intact.
 
 2. **Straddle-tolerant cell assignment.** Search each digit in a window that overlaps
    neighboring cells, then assign by component centroid. Cheaper than #1, directly

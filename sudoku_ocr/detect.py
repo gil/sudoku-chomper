@@ -74,15 +74,23 @@ def _square_candidates(mask: np.ndarray, img_area: float) -> list[np.ndarray]:
 
 
 def _dedup(cands: list[np.ndarray]) -> list[np.ndarray]:
-    """Drop nested duplicates (inner vs outer border) by center proximity."""
-    kept: list[tuple[np.ndarray, tuple[float, float], float]] = []
+    """Drop concentric duplicate borders (inner vs outer line of one grid), keeping the
+    larger. Merging requires *similar size*, so a big outer page frame does NOT swallow
+    the distinct, smaller grids on a multi-puzzle page — those are kept as separate
+    candidates. Spurious sub-squares (3×3 boxes, junk) survive here but get filtered
+    downstream by the clue-count / conflict checks in the CLI.
+    """
+    kept: list[tuple[float, float, float]] = []
+    out: list[np.ndarray] = []
     for c in sorted(cands, key=cv2.contourArea, reverse=True):
         (cx, cy), (w, h), _ = cv2.minAreaRect(c)
         r = max(w, h)
-        if any(abs(cx - kx) < kr * 0.5 and abs(cy - ky) < kr * 0.5 for _, (kx, ky), kr in kept):
+        if any(abs(cx - kx) < kr * 0.4 and abs(cy - ky) < kr * 0.4 and 0.7 < r / kr < 1.43
+               for kx, ky, kr in kept):
             continue
-        kept.append((c, (cx, cy), r))
-    return [c for c, _, _ in kept]
+        kept.append((cx, cy, r))
+        out.append(c)
+    return out
 
 
 def _content_bbox(mask: np.ndarray) -> np.ndarray | None:

@@ -16,6 +16,7 @@ from .detect import find_grids, load_image
 from .recognize import predict_glyph
 
 MIN_CLUES = 17  # fewest givens a proper Sudoku can have; filters false-positive grids
+MAX_CONFLICTS = 10  # above this a "grid" is a page frame / unrecoverable warp, not a puzzle
 
 
 def grid_to_string(warped: np.ndarray, debug_dir: str | None = None, idx: int = 0) -> str:
@@ -49,7 +50,10 @@ def extract(path: str, include_all: bool = False, debug: bool = False) -> list[s
             continue  # not a plausible Sudoku grid
         if n == 81 and not include_all:
             continue  # solved grid (e.g. printed solution) — puzzles only
-        for msg in validate.conflicts(puzzle):
+        conflicts = validate.conflicts(puzzle)
+        if len(conflicts) >= MAX_CONFLICTS:
+            continue  # not a real puzzle (page frame / unrecoverable warp), not OCR noise
+        for msg in conflicts:
             print(f"# warning [{path}]: {msg} (possible OCR misread)", file=sys.stderr)
         results.append(puzzle)
     return results
