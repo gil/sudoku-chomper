@@ -41,8 +41,9 @@ misreads) are reported on stderr as `# warning ...` without blocking output.
    bounding-box fallback so ragged newspaper borders still register) and
    perspective-correct it to a 900 px square.
 2. `cells.py` — CLAHE contrast boost, global Otsu binarize, morphological grid-line
-   removal, then slice into 81 cells and isolate each digit's largest interior
-   component (empty cells yield none).
+   removal, cell boundaries from the detected grid lines (box-anchored when only the
+   thick separators survive, else an even split), then isolate each cell's largest
+   interior component (empty cells yield none).
 3. `recognize.py` — classify non-empty cells (1–9) with the SVM on HOG + downsampled
    pixel features.
 4. `validate.py` — flag row/column/box duplicate conflicts.
