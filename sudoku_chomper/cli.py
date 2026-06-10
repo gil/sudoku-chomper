@@ -39,7 +39,7 @@ def extract(path: str, include_all: bool = False, debug: bool = False) -> list[s
 
     debug_dir = None
     if debug:
-        debug_dir = tempfile.mkdtemp(prefix="sudoku_ocr_")
+        debug_dir = tempfile.mkdtemp(prefix="sudoku_chomper_")
         print(f"# debug crops -> {debug_dir}", file=sys.stderr)
 
     results: list[str] = []
@@ -61,7 +61,7 @@ def extract(path: str, include_all: bool = False, debug: bool = False) -> list[s
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="sudoku-ocr",
+        prog="sudoku-chomper",
         description="Extract Sudoku puzzle(s) from an image as 81-char strings.",
     )
     parser.add_argument("image", help="path to the image file")

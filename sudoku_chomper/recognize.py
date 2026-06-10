@@ -104,7 +104,7 @@ def _load_model():
 
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
-            f"Digit model not found at {MODEL_PATH}. Run: python -m sudoku_ocr.train"
+            f"Digit model not found at {MODEL_PATH}. Run: python -m sudoku_chomper.train"
         )
     return joblib.load(MODEL_PATH)
 

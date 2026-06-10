@@ -12,7 +12,7 @@ dist/
 venv/
 env/
 
-# Trained model artifacts (regenerate with `python -m sudoku_ocr.train`)
+# Trained model artifacts (regenerate with `python -m sudoku_chomper.train`)
 models/*.joblib
 
 # Test / tooling caches

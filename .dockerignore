@@ -1,0 +1,16 @@
+.git/
+.venv/
+venv/
+env/
+sample/
+models/
+tests/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+*.original.md
+Improvements.md
+README.md

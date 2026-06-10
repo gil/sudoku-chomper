@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from sudoku_ocr.cli import extract
+from sudoku_chomper.cli import extract
 
 SAMPLES = os.path.join(os.path.dirname(__file__), os.pardir, "sample")
 

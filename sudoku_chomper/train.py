@@ -4,7 +4,7 @@ Digits 1–9 are rendered from a range of system fonts with augmentation (scale,
 rotation, blur, noise), pushed through the same normalize+HOG pipeline used at
 inference time, then fit with an RBF SVM. Run once:
 
-    python -m sudoku_ocr.train
+    python -m sudoku_chomper.train
 """
 
 from __future__ import annotations

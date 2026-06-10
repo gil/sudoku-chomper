@@ -1,4 +1,4 @@
-# sudoku-ocr
+# sudoku-chomper
 
 Offline CLI that extracts Sudoku puzzle(s) from an image and prints each as the
 standard 81-character string (row-major, `0` = empty cell).
@@ -17,13 +17,13 @@ renders.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python -m sudoku_ocr.train      # builds models/digit_svm.joblib (run once)
+python -m sudoku_chomper.train      # builds models/digit_svm.joblib (run once)
 ```
 
 ## Usage
 
 ```bash
-python -m sudoku_ocr IMAGE [--all] [--debug]
+python -m sudoku_chomper IMAGE [--all] [--debug]
 ```
 
 - Prints one 81-char line per detected **unsolved** grid (top-to-bottom,
@@ -34,6 +34,22 @@ python -m sudoku_ocr IMAGE [--all] [--debug]
 
 A row/column/box validity check runs on each result; conflicts (likely OCR
 misreads) are reported on stderr as `# warning ...` without blocking output.
+
+## Docker
+
+No local Python/OpenCV needed. The image installs the dependencies and bakes the
+trained digit model in at build time (using fonts installed in the container).
+
+```bash
+docker build -t sudoku-chomper .
+
+# Mount the folder holding your images, then pass a container-side path:
+docker run --rm -v "$PWD/sample:/data" sudoku-chomper /data/sample.png
+docker run --rm -v "$PWD/sample:/data" sudoku-chomper /data/sample.png --all
+```
+
+The image's `ENTRYPOINT` is the CLI, so anything after the image name is passed
+straight through (`IMAGE [--all] [--debug]`).
 
 ## How it works
 
