@@ -41,21 +41,35 @@ def _line_mask(gray: np.ndarray) -> np.ndarray:
     return mask
 
 
+def _quad_from_contour(c: np.ndarray) -> np.ndarray | None:
+    """Best 4-corner approximation of a (possibly broken/noisy) grid border.
+
+    Newspaper grids have ragged borders, so ``approxPolyDP`` on the raw contour
+    yields 5–12 points. Working on the convex hull removes the concave noise; if no
+    clean quad emerges, fall back to the contour's rotated bounding box.
+    """
+    hull = cv2.convexHull(c)
+    peri = cv2.arcLength(hull, True)
+    for eps in (0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10):
+        approx = cv2.approxPolyDP(hull, eps * peri, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            return approx
+    box = cv2.boxPoints(cv2.minAreaRect(c))
+    return box.reshape(4, 1, 2).astype(np.int32)
+
+
 def _square_candidates(mask: np.ndarray, img_area: float) -> list[np.ndarray]:
     contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     out: list[np.ndarray] = []
     for c in contours:
-        area = cv2.contourArea(c)
-        if area < 0.03 * img_area:
-            continue
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) != 4 or not cv2.isContourConvex(approx):
+        if cv2.contourArea(c) < 0.03 * img_area:
             continue
         (_, _), (w, h), _ = cv2.minAreaRect(c)
-        if min(w, h) == 0 or not 0.7 <= w / h <= 1.4:
+        if min(w, h) == 0 or not 0.7 <= w / h <= 1.4:  # must be roughly square
             continue
-        out.append(approx)
+        quad = _quad_from_contour(c)
+        if quad is not None:
+            out.append(quad)
     return out
 
 

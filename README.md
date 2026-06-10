@@ -37,8 +37,20 @@ misreads) are reported on stderr as `# warning ...` without blocking output.
 
 ## How it works
 
-1. `detect.py` — locate and perspective-correct each 9×9 grid.
-2. `cells.py` — slice into 81 cells, flag empties by ink ratio.
-3. `recognize.py` — classify non-empty cells (1–9) with the trained SVM.
-4. `validate.py` — flag duplicate conflicts.
+1. `detect.py` — locate each 9×9 grid (convex-hull → 4-corner quad, with a rotated
+   bounding-box fallback so ragged newspaper borders still register) and
+   perspective-correct it to a 900 px square.
+2. `cells.py` — CLAHE contrast boost, global Otsu binarize, morphological grid-line
+   removal, then slice into 81 cells and isolate each digit's largest interior
+   component (empty cells yield none).
+3. `recognize.py` — classify non-empty cells (1–9) with the SVM on HOG + downsampled
+   pixel features.
+4. `validate.py` — flag row/column/box duplicate conflicts.
 5. `cli.py` — assemble strings, filter solved grids, order, print.
+
+## Accuracy on the bundled samples
+
+- **Digital screenshot, printed book scans, two-puzzle page** — exact.
+- **Newspaper photos** — all grids detected and mostly read; faint print, perspective
+  skew, and 3/8/9 ambiguity cause occasional cell errors, surfaced by the validity
+  warnings.
