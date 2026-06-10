@@ -41,11 +41,10 @@ No local Python/OpenCV needed. The image installs the dependencies and bakes the
 trained digit model in at build time (using fonts installed in the container).
 
 ```bash
-docker build -t sudoku-chomper .
+docker build --progress=plain --no-cache -t sudoku-chomper .
 
 # Mount the folder holding your images, then pass a container-side path:
 docker run --rm -v "$PWD/sample:/data" sudoku-chomper /data/sample.png
-docker run --rm -v "$PWD/sample:/data" sudoku-chomper /data/sample.png --all
 ```
 
 The image's `ENTRYPOINT` is the CLI, so anything after the image name is passed
