@@ -176,6 +176,14 @@ the only problem is the **print-vs-handwriting decision**.
   - **Adaptive intensity split** (`_printed_mask`): 1-D Otsu over the grid's glyph
     intensities, drop the light (pencil) cluster — only when the dark/light cluster gap
     clears `PENCIL_GAP`, so a fully-printed grid is kept whole.
+  - **Quantization bug (fixed 2026-06):** Otsu ran on uint8-truncated intensities but
+    the keep test compared the floats, so a printed given landing on the integer
+    threshold (e.g. 50.6 vs thr 50) was dropped. Two labeled rescans (Puzzle 8 / 13
+    book pages) exposed it; fixing it recovered **4 dropped givens across
+    dirty_01/06/07** that the old regression strings had wrongly locked in as
+    handwritten, and the now-honest cluster gap also caught dirty_05's one residual
+    leak (a faint blue 5, saturation 37, misread as a given 4). All split decisions
+    now happen in the quantized domain.
   Needs the BGR warp, so `detect.find_grids(image, return_color=True)` carries a color
   crop on the same corners (default gray path untouched → existing tests byte-identical).
 - **`--use-style`** (Tier 3). A binary **printed-vs-handwritten SVM**
@@ -260,9 +268,15 @@ edge (dropped 6 givens) → largest-gap split; `extract(use_style=)` didn't impl
 
 | Sample | Tier | `--printed-only` | `--use-style` |
 |---|---|---|---|
-| `dirty_01/06/07` | 1 (pencil) | givens recovered | n/a |
-| `dirty_05` | 2 (blue ink) | givens recovered (1 residual misread) | n/a |
+| `dirty_01/06/07` | 1 (pencil) | exact (post quantization fix) | n/a |
+| `dirty_05` | 2 (blue ink) | exact (post quantization fix) | n/a |
+| `850…035.jpg` (Puzzle 8) | 1 (heavy pencil) | **exact** (label corrected: r1c9 is a printed given) | leaks 3 heavy-pencil cells |
+| `000…000.jpg` (Puzzle 13, dirty_07 rescan) | 1 (pencil) | **exact** | leaks 2 cells |
 | `dirty_02/03/04` | 3 (dark pen) | not separable | **exact** in-sample; LOO recall 1.000, leak 2/19/0 cells |
+
+Heavy pencil pressed to near-print darkness (Puzzle 8's r1c9-adjacent cells, intensity
+gap of only 0.5 gray levels at the boundary) is the practical floor of the intensity
+signal — beyond it, only shape/stroke fusion can help.
 
 Tier-1/2 regression tests for `dirty_01/05/06/07` are in `tests/test_pipeline.py`. Tier-3
 end-to-end is not asserted (the shipped model is in-sample there; would just lock the

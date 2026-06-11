@@ -107,12 +107,14 @@ def _printed_mask(intensities: list[float], saturations: list[float]) -> list[bo
     inten = [intensities[i] for i in range(n) if achromatic[i]]
     keep_dark = [True] * len(inten)
     if len(inten) >= 4:
-        vals = np.array(inten, np.uint8).reshape(-1, 1)
-        thr, _ = cv2.threshold(vals, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        dark = [v for v in inten if v <= thr]
-        light = [v for v in inten if v > thr]
-        if dark and light and (np.mean(light) - np.mean(dark)) >= PENCIL_GAP:
-            keep_dark = [v <= thr for v in inten]
+        # Compare in the same quantized domain Otsu saw, or a printed glyph that
+        # truncates onto the threshold (e.g. 50.6 vs thr 50) gets dropped.
+        vals = np.array(inten, np.uint8)
+        thr, _ = cv2.threshold(vals.reshape(-1, 1), 0, 255,
+                               cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        dark, light = vals[vals <= thr], vals[vals > thr]
+        if dark.size and light.size and (light.mean() - dark.mean()) >= PENCIL_GAP:
+            keep_dark = (vals <= thr).tolist()
 
     out, k = [], 0
     for i in range(n):

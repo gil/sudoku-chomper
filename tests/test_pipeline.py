@@ -109,28 +109,58 @@ def test_output_is_valid_sudoku_shape(name):
 # limit — the marks are as dark and achromatic as print — and is not asserted.
 
 def test_printed_only_light_pencil():
-    """dirty_01 (= old page_018): bold printed givens, faint gray pencil answers."""
+    """dirty_01 (= old page_018): bold printed givens, faint gray pencil answers.
+
+    r6c7 = printed 9 the pre-quantization-fix path dropped (verified on the scan).
+    """
     assert extract(s("dirty_01.jpg"), printed_only=True) == [
-        "000078002006300007530000060001000020005080600040000000080000074400002300100760000"
+        "000078002006300007530000060001000020005080600040000900080000074400002300100760000"
     ]
 
 
 def test_printed_only_pencil_dirty_06():
+    """r5c2 = printed 4 the pre-quantization-fix path dropped (verified on the scan)."""
     assert extract(s("dirty_06.jpg"), printed_only=True) == [
-        "450000006000020004009800120070008000000000090000900070025004700700050000100000069"
+        "450000006000020004009800120070008000040000090000900070025004700700050000100000069"
     ]
 
 
 def test_printed_only_pencil_dirty_07():
+    """r2c1 = printed 7 and r9c2 = printed 4 the pre-quantization-fix path dropped
+    (confirmed by the labeled rescan of the same page, the 000002…jpg sample)."""
     assert extract(s("dirty_07.jpg"), printed_only=True) == [
-        "000002080005000400020600090500060200000408000009030005080001030006000708000300000"
+        "000002080705000400020600090500060200000408000009030005080001030006000708040300000"
     ]
 
 
 def test_printed_only_blue_ink():
-    """dirty_05: black printed givens, blue-pen answers — saturation drops the ink."""
+    """dirty_05: black printed givens, blue-pen answers — saturation drops the ink.
+
+    r3c8 was a faint blue 5 (saturation 37, below the filter) leaking through as a
+    misread 4; the intensity split now catches it.
+    """
     assert extract(s("dirty_05.png"), printed_only=True) == [
-        "500040007082900000040600140018500000600020003000003690001009060000005480200010005"
+        "500040007082900000040600100018500000600020003000003690001009060000005480200010005"
+    ]
+
+
+def test_printed_only_pencil_puzzle_8():
+    """Filled book page (Puzzle 8), heavy pencil; filename is the labeled truth.
+
+    Hardest intensity case so far: the darkest pencil glyph sits 0.5 gray levels
+    above the lightest printed given.
+    """
+    assert extract(s("850000001000005306040006900017009000000000000000300870008700040602100000100000035.jpg"),
+                   printed_only=True) == [
+        "850000001000005306040006900017009000000000000000300870008700040602100000100000035"
+    ]
+
+
+def test_printed_only_pencil_puzzle_13():
+    """Rescan of the dirty_07 page (Puzzle 13); filename is the labeled truth."""
+    assert extract(s("000002080705000400020600090500060200000408000009030005080001030006000708040300000.jpg"),
+                   printed_only=True) == [
+        "000002080705000400020600090500060200000408000009030005080001030006000708040300000"
     ]
 
 
