@@ -14,6 +14,7 @@ from . import validate
 from .cells import iter_cells
 from .detect import find_grids, load_image
 from .recognize import predict_glyph
+from .render import render_puzzle
 
 MIN_CLUES = 17  # fewest givens a proper Sudoku can have; filters false-positive grids
 MAX_CONFLICTS = 10  # above this a "grid" is a page frame / unrecoverable warp, not a puzzle
@@ -101,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--use-style", action="store_true",
                         help="(experimental) also drop dark handwriting by glyph shape "
                              "via the style model; implies --printed-only")
+    parser.add_argument("--render-image", nargs="?", const="", metavar="OUT",
+                        help="also save each extracted puzzle as a clean digital grid "
+                             "image (OUT_sudoku001.ext, ...); defaults to the input image path")
     args = parser.parse_args(argv)
 
     results = extract(args.image, include_all=args.all, debug=args.debug,
@@ -111,7 +115,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     for line in results:
         print(line)
+    if args.render_image is not None:
+        _render_outputs(args.render_image or args.image, results)
     return 0
+
+
+def _render_outputs(base: str, results: list[str]) -> None:
+    stem, ext = os.path.splitext(base)
+    if not ext:
+        ext = ".png"
+    for i, puzzle in enumerate(results, 1):
+        out = f"{stem}_sudoku{i:03d}{ext}"
+        cv2.imwrite(out, render_puzzle(puzzle))
+        print(f"# rendered -> {out}", file=sys.stderr)
 
 
 if __name__ == "__main__":
