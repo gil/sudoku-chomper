@@ -15,13 +15,15 @@ import cv2
 import numpy as np
 
 from .detect import SIZE
-from .recognize import binarize, extract_glyph
+from .recognize import binarize, extract_glyph, style_score
 
 INSET = 0.06  # fraction of each cell trimmed inside its boundaries before glyph search
 
 # printed/handwritten discrimination (only used when printed_only is requested)
 SAT_THRESH = 50         # mean HSV saturation above this = colored ink (pen), not print
 PENCIL_GAP = 35         # min dark/light intensity-cluster gap before trusting a split
+STYLE_GAP = 0.35        # min printed/handwritten style-score cluster gap before splitting
+                        # (style_score has a per-scan offset, so the cut is adaptive)
 
 # Grid lines run continuously across the whole warped grid, so a long 1-D opening
 # isolates them while leaving digits (which never span this length) intact. Removing
@@ -115,13 +117,37 @@ def _printed_mask(intensities: list[float], saturations: list[float]) -> list[bo
     return out
 
 
+def _style_keep(scores: list[float]) -> list[bool]:
+    """Keep the lower (more printed) style-score cluster, adaptively.
+
+    ``style_score`` carries a per-scan offset, so a fixed cutoff is unreliable; a 1-D
+    split self-centers per grid. The printed and handwritten scores form two clusters
+    separated by a gap, so cut at the largest gap and keep the lower side. Only splits
+    when that gap is clear, so a single-style grid (all printed) is kept whole.
+    """
+    if len(scores) < 4:
+        return [True] * len(scores)
+    s = sorted(scores)
+    gap, i = max((s[k + 1] - s[k], k) for k in range(len(s) - 1))
+    if gap < STYLE_GAP:
+        return [True] * len(scores)
+    cut = (s[i] + s[i + 1]) / 2
+    return [v <= cut for v in scores]
+
+
 def iter_cells(warped: np.ndarray, printed_only: bool = False,
-               color_warped: np.ndarray | None = None):
+               color_warped: np.ndarray | None = None, use_style: bool = False,
+               stats: dict | None = None):
     """Yield (index 0–80, glyph mask or None) for all 81 cells.
 
     A ``None`` glyph means the cell is empty. With ``printed_only`` (needs
-    ``color_warped``), handwritten answers — light pencil or colored ink — are also
-    returned as ``None`` so only printed givens survive.
+    ``color_warped``), handwritten answers are returned as ``None`` so only printed
+    givens survive: light pencil via intensity, colored ink via saturation, and — for
+    black-and-white scans where neither fires — handwritten *shape* via the style model
+    (``use_style``).
+
+    When ``stats`` is given it is filled with ``filtered`` (cells dropped as handwritten)
+    so callers can report that filtering happened.
     """
     eq = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(warped)
     binary = binarize(eq)
@@ -156,8 +182,16 @@ def iter_cells(warped: np.ndarray, printed_only: bool = False,
 
     if printed_only:
         present = [c for c in cells if c[1] is not None]
-        keep = _printed_mask([c[2] for c in present], [c[3] for c in present])
+        # Two regimes: shape (style) for B&W scans where dark handwriting matches print
+        # in intensity *and* hue (and JPEG chroma fringing makes saturation unreliable);
+        # intensity+saturation for pencil / colored ink. They conflict, so pick one.
+        if use_style:
+            keep = _style_keep([style_score(c[1]) for c in present])
+        else:
+            keep = _printed_mask([c[2] for c in present], [c[3] for c in present])
         drop = {present[i][0] for i in range(len(present)) if not keep[i]}
+        if stats is not None:
+            stats["filtered"] = len(drop)
         for idx, glyph, _, _ in cells:
             yield idx, (None if idx in drop else glyph)
     else:

@@ -17,6 +17,7 @@ GLYPH = 28           # normalized glyph canvas (px)
 INNER = 20           # digit is fit into this box, then centered on the canvas
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "models", "digit_svm.joblib")
+STYLE_MODEL_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "models", "style_svm.joblib")
 
 
 def binarize(gray: np.ndarray) -> np.ndarray:
@@ -115,3 +116,27 @@ def predict_glyph(glyph: np.ndarray) -> int:
     if canvas is None:
         return 0
     return int(_load_model().predict([hog_features(canvas)])[0])
+
+
+@lru_cache(maxsize=1)
+def _load_style_model():
+    import joblib
+
+    if not os.path.exists(STYLE_MODEL_PATH):
+        raise FileNotFoundError(
+            f"Style model not found at {STYLE_MODEL_PATH}. "
+            "Run: python -m sudoku_chomper.train_style"
+        )
+    return joblib.load(STYLE_MODEL_PATH)
+
+
+def style_score(glyph: np.ndarray) -> float:
+    """Signed printed/handwritten score for a glyph mask: >0 = handwritten, <0 = printed.
+
+    Distance from the SVM boundary, so callers can bias the cutoff toward keeping
+    printed givens. Returns a strongly-printed score for masks with no usable glyph.
+    """
+    canvas = normalize_glyph(glyph)
+    if canvas is None:
+        return -1e9
+    return float(_load_style_model().decision_function([hog_features(canvas)])[0])

@@ -20,9 +20,11 @@ MAX_CONFLICTS = 10  # above this a "grid" is a page frame / unrecoverable warp, 
 
 
 def grid_to_string(warped: np.ndarray, debug_dir: str | None = None, idx: int = 0,
-                   printed_only: bool = False, color_warped: np.ndarray | None = None) -> str:
+                   printed_only: bool = False, color_warped: np.ndarray | None = None,
+                   use_style: bool = False, stats: dict | None = None) -> str:
     digits = ["0"] * 81
-    for i, glyph in iter_cells(warped, printed_only=printed_only, color_warped=color_warped):
+    for i, glyph in iter_cells(warped, printed_only=printed_only,
+                               color_warped=color_warped, use_style=use_style, stats=stats):
         if glyph is not None:
             d = predict_glyph(glyph)
             if d:
@@ -35,7 +37,8 @@ def grid_to_string(warped: np.ndarray, debug_dir: str | None = None, idx: int = 
 
 
 def extract(path: str, include_all: bool = False, debug: bool = False,
-            printed_only: bool = False) -> list[str]:
+            printed_only: bool = False, use_style: bool = False) -> list[str]:
+    printed_only = printed_only or use_style  # style filtering needs the printed-only path
     image = load_image(path)
     grids = find_grids(image, return_color=printed_only)
 
@@ -47,7 +50,12 @@ def extract(path: str, include_all: bool = False, debug: bool = False,
     results: list[str] = []
     for idx, grid in enumerate(grids):
         warped, color_warped = grid if printed_only else (grid, None)
-        puzzle = grid_to_string(warped, debug_dir, idx, printed_only, color_warped)
+        stats: dict = {}
+        puzzle = grid_to_string(warped, debug_dir, idx, printed_only, color_warped,
+                                use_style, stats)
+        if stats.get("filtered"):
+            print(f"# note [{path}]: dropped {stats['filtered']} handwritten cell(s) "
+                  f"from grid {idx} (--printed-only)", file=sys.stderr)
         n = validate.filled_count(puzzle)
         if n < MIN_CLUES:
             continue  # not a plausible Sudoku grid
@@ -72,10 +80,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--debug", action="store_true", help="dump warped grids / cell crops")
     parser.add_argument("--printed-only", action="store_true",
                         help="keep only printed givens, ignore handwritten answers")
+    parser.add_argument("--use-style", action="store_true",
+                        help="(experimental) also drop dark handwriting by glyph shape "
+                             "via the style model; implies --printed-only")
     args = parser.parse_args(argv)
 
     results = extract(args.image, include_all=args.all, debug=args.debug,
-                      printed_only=args.printed_only)
+                      printed_only=args.printed_only or args.use_style,
+                      use_style=args.use_style)
     if not results:
         print("# no Sudoku grid detected", file=sys.stderr)
         return 1

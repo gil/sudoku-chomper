@@ -149,3 +149,94 @@ fail the `MIN_CLUES = 17` filter.
 
 7. **Confidence output.** Expose SVM `decision_function` margins so low-confidence cells
    can be surfaced (`?`) or routed to a fallback — useful signal for the photo cases.
+
+---
+
+# Printed vs handwritten: keeping only the printed givens
+
+Filled-in book scans (the `dirty_*` samples) carry the original **printed givens** plus a
+user's **handwritten answers**. Goal: extract only the printed givens. `--printed-only`
+(and the experimental `--use-style`) implement this. Glyph extraction + digit OCR are
+already correct on the printed givens (dirty_02 32/32, dirty_03 24/24, dirty_04 27/27);
+the only problem is the **print-vs-handwriting decision**.
+
+## Three difficulty tiers (by the signal that separates the two)
+
+| Tier | Samples | Handwriting vs print | Separating signal | Status |
+|---|---|---|---|---|
+| 1 | `dirty_01/06/07` | faint grey **pencil** vs bold print | grayscale **intensity** | works |
+| 2 | `dirty_05` | **blue/colored ink** vs black print | HSV **saturation** | works |
+| 3 | `dirty_02/03/04` | **dark pen**, B&W scan — same darkness *and* hue | glyph **shape** only | experimental |
+
+## What was built
+
+- **`--printed-only`** (default path, Tiers 1–2). In `cells.iter_cells`, each glyph is
+  scored on the **pre-CLAHE** warp (CLAHE destroys absolute intensity):
+  - **Saturation** filter drops colored ink (`SAT_THRESH`).
+  - **Adaptive intensity split** (`_printed_mask`): 1-D Otsu over the grid's glyph
+    intensities, drop the light (pencil) cluster — only when the dark/light cluster gap
+    clears `PENCIL_GAP`, so a fully-printed grid is kept whole.
+  Needs the BGR warp, so `detect.find_grids(image, return_color=True)` carries a color
+  crop on the same corners (default gray path untouched → existing tests byte-identical).
+- **`--use-style`** (experimental, Tier 3). A binary **printed-vs-handwritten SVM**
+  (`train_style.py` → `models/style_svm.joblib`) over the shared HOG features:
+  - printed class = synthetic font renders (reuses `train.py`),
+  - handwritten class = MNIST 1–9 **+ real labeled glyphs** from `REAL_SAMPLES`
+    (the `dirty_02/03/04` ground-truth strings, auto-extracted and augmented).
+  `recognize.style_score` returns a signed margin (`<0` printed, `>0` handwritten);
+  `cells._style_keep` cuts at the **largest gap** in the per-grid scores and keeps the
+  lower side.
+- **Regimes are exclusive**: `--use-style` filters by **shape only** and *skips*
+  intensity/saturation, because on a B&W JPEG the bold print edges pick up **chroma
+  fringing** (saturation ≈ 80 > 50) and the saturation filter would wrongly drop the
+  printed givens. Pencil/ink and dark-pen are different regimes; pick one.
+- **Notice**: when `--printed-only` drops any cell, `cli.extract` prints a
+  `# note … dropped N handwritten cell(s)` to stderr (via the `stats` dict threaded
+  through `iter_cells`). Output is unchanged; it just flags that filtering happened.
+
+## What was measured (Tier 3 / `--use-style`)
+
+- **MNIST-only** handwritten class: separation ≈ **0.5**, distributions overlap heavily
+  (real B&W book glyphs look more "printed" than MNIST). Not usable; also false-split
+  clean Tier-1/2 grids. → had to add real samples and gate the regimes.
+- **+ real labeled glyphs, in-sample** (model has seen that scan's hand): dirty_02/03/04
+  all **exact**.
+- **+ real labeled glyphs, leave-one-image-out** (test scan unseen): **recall is perfect**
+  (all givens kept) but it **keeps ~all handwriting too** — on an unseen scan the scores
+  don't form a clean gap, so `_style_keep` no-ops. With only 3 scans the classifier
+  **overfits per-scan and does not generalize**.
+
+**Bugs fixed along the way**: `_style_keep` uint8 quantization placed the cut at a cluster
+edge (dropped 6 givens) → largest-gap split; `extract(use_style=)` didn't imply
+`printed_only`; saturation filter backfiring on B&W (the regime split).
+
+## What still can be tried (Tier 3)
+
+1. **More labeled scans — the single biggest lever.** ~**20–40** filled pages spanning
+   handwriting styles / books / scanners, labeled via their printed-givens strings (add
+   to `REAL_SAMPLES`; extraction is automatic). 3 scans overfit; volume + diversity is
+   what closes the generalization gap.
+2. **Soft cut for overlap.** `_style_keep`'s largest-gap rule is too strict on unseen
+   data (no clean gap → no split). An **Otsu-valley** cut tolerates overlap — earlier
+   measured ≈ **95% givens recovered / ~20% handwriting leak** per grid. Trade strictness
+   vs. leak; possibly expose as a parameter.
+3. **CNN / better features** for the style head once a real labeled set exists — HOG was
+   chosen to reuse the digit pipeline, but shape discrimination of print vs hand may want
+   richer features. Keep SVM as the offline default.
+4. **Per-grid calibration of `style_score`.** The margin carries a per-scan offset;
+   normalizing per grid (e.g. subtract the median, or fit 2 clusters) before cutting may
+   recover separation on unseen scans without more data.
+5. **dirty_03 scribbles / overwrites.** Where handwriting overwrites a printed cell the
+   connected components merge — likely unrecoverable without stroke-level separation
+   (stroke-width transform / inpainting). Treat as a known hard limit.
+
+## Coverage today
+
+| Sample | Tier | `--printed-only` | `--use-style` |
+|---|---|---|---|
+| `dirty_01/06/07` | 1 (pencil) | givens recovered | n/a |
+| `dirty_05` | 2 (blue ink) | givens recovered (1 residual misread) | n/a |
+| `dirty_02/03/04` | 3 (dark pen) | not separable | exact **in-sample only**; needs more data to generalize |
+
+Tier-1/2 regression tests for `dirty_01/05/06/07` are in `tests/test_pipeline.py`. Tier-3
+is not asserted (in-sample = memorization; would just lock the model file).
