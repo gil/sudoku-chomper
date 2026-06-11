@@ -2,7 +2,11 @@
 .venv/
 venv/
 env/
-sample/
+sample/*
+# style classifier trains on these real labeled scans at build time (REAL_SAMPLES)
+!sample/dirty_02.png
+!sample/dirty_03.png
+!sample/dirty_04.png
 models/
 tests/
 **/__pycache__/

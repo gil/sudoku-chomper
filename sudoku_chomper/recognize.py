@@ -130,6 +130,10 @@ def _load_style_model():
     return joblib.load(STYLE_MODEL_PATH)
 
 
+def style_model_available() -> bool:
+    return os.path.exists(STYLE_MODEL_PATH)
+
+
 def style_score(glyph: np.ndarray) -> float:
     """Signed printed/handwritten score for a glyph mask: >0 = handwritten, <0 = printed.
 

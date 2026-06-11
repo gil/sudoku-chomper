@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from .detect import SIZE
-from .recognize import binarize, extract_glyph, style_score
+from .recognize import binarize, extract_glyph, style_model_available, style_score
 
 INSET = 0.06  # fraction of each cell trimmed inside its boundaries before glyph search
 
@@ -185,9 +185,11 @@ def iter_cells(warped: np.ndarray, printed_only: bool = False,
         # Two regimes: shape (style) for B&W scans where dark handwriting matches print
         # in intensity *and* hue (and JPEG chroma fringing makes saturation unreliable);
         # intensity+saturation for pencil / colored ink. They conflict, so pick one.
-        if use_style:
+        if use_style and style_model_available():
             keep = _style_keep([style_score(c[1]) for c in present])
         else:
+            if use_style and stats is not None:
+                stats["style_missing"] = True  # fall back to intensity/saturation
             keep = _printed_mask([c[2] for c in present], [c[3] for c in present])
         drop = {present[i][0] for i in range(len(present)) if not keep[i]}
         if stats is not None:

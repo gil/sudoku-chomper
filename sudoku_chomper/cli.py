@@ -53,6 +53,10 @@ def extract(path: str, include_all: bool = False, debug: bool = False,
         stats: dict = {}
         puzzle = grid_to_string(warped, debug_dir, idx, printed_only, color_warped,
                                 use_style, stats)
+        if stats.get("style_missing"):
+            print(f"# warning [{path}]: --use-style but no style model; "
+                  "fell back to intensity/saturation. Run: "
+                  "python -m sudoku_chomper.train_style", file=sys.stderr)
         if stats.get("filtered"):
             print(f"# note [{path}]: dropped {stats['filtered']} handwritten cell(s) "
                   f"from grid {idx} (--printed-only)", file=sys.stderr)
