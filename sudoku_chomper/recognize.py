@@ -60,6 +60,21 @@ def extract_glyph(bin_cell: np.ndarray) -> np.ndarray | None:
     return np.where(labels == idx, 255, 0).astype(np.uint8)
 
 
+def stroke_width(mask: np.ndarray) -> float:
+    """Median ink stroke width (px) of a glyph mask.
+
+    Twice the median distance-transform value over the ink, i.e. the typical
+    stroke thickness. Print and pen/pencil handwriting on the same page differ
+    far more in stroke weight than in darkness, so this separates them where
+    intensity can't.
+    """
+    dist = cv2.distanceTransform((mask > 0).astype(np.uint8), cv2.DIST_L2, 3)
+    ink = dist[dist > 0]
+    if ink.size == 0:
+        return 0.0
+    return float(np.median(ink)) * 2.0
+
+
 def normalize_glyph(mask: np.ndarray) -> np.ndarray | None:
     """Crop the glyph from an ink mask and center it on a GLYPH×GLYPH canvas.
 

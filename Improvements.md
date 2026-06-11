@@ -178,14 +178,21 @@ the only problem is the **print-vs-handwriting decision**.
     clears `PENCIL_GAP`, so a fully-printed grid is kept whole.
   Needs the BGR warp, so `detect.find_grids(image, return_color=True)` carries a color
   crop on the same corners (default gray path untouched → existing tests byte-identical).
-- **`--use-style`** (experimental, Tier 3). A binary **printed-vs-handwritten SVM**
+- **`--use-style`** (Tier 3). A binary **printed-vs-handwritten SVM**
   (`train_style.py` → `models/style_svm.joblib`) over the shared HOG features:
   - printed class = synthetic font renders (reuses `train.py`),
   - handwritten class = MNIST 1–9 **+ real labeled glyphs** from `REAL_SAMPLES`
     (the `dirty_02/03/04` ground-truth strings, auto-extracted and augmented).
   `recognize.style_score` returns a signed margin (`<0` printed, `>0` handwritten);
-  `cells._style_keep` cuts at the **largest gap** in the per-grid scores and keeps the
-  lower side.
+  `cells._style_keep` fuses it with **median stroke width** (`recognize.stroke_width`,
+  2× median distance-transform over the ink — print and pen come from different ink
+  sources, so widths form two clusters). The split fires only when two gates pass:
+  width-cluster ratio ≥ `SW_RATIO_GATE` (1.38; printed-only grids measure ≤ 1.31,
+  mixed ≥ 1.45) **and** the thin cluster style-scores ≥ `STYLE_AGREE` (0.8) more
+  handwritten (clean grids ≤ +0.47, handwriting-bearing ≥ +1.44 — kills false fires
+  on warped/JPEG-noisy print where width alone wobbles). When fired, glyphs split by
+  2-means on `z(width) − z(style_score)` — the z-scoring self-centers per grid, which
+  fixes the per-scan score offset — intersected with the old largest-gap score cut.
 - **Regimes are exclusive**: `--use-style` filters by **shape only** and *skips*
   intensity/saturation, because on a B&W JPEG the bold print edges pick up **chroma
   fringing** (saturation ≈ 80 > 50) and the saturation filter would wrongly drop the
@@ -203,8 +210,25 @@ the only problem is the **print-vs-handwriting decision**.
   all **exact**.
 - **+ real labeled glyphs, leave-one-image-out** (test scan unseen): **recall is perfect**
   (all givens kept) but it **keeps ~all handwriting too** — on an unseen scan the scores
-  don't form a clean gap, so `_style_keep` no-ops. With only 3 scans the classifier
-  **overfits per-scan and does not generalize**.
+  don't form a clean gap, so the old largest-gap cut no-ops. With only 3 scans the
+  classifier **overfits per-scan and does not generalize**.
+- **Stroke-width fusion (current).** Probing per-glyph features against the
+  dirty_02/03/04 ground truth: **median stroke width** is by far the strongest single
+  signal (per-grid threshold separability 1.00 / 0.82 / 0.99 — print is thicker than
+  ballpoint), beating glyph height, area, centroid, stroke-width variance, and the
+  digit-SVM margin. It needs no training, so it generalizes by construction. Fused
+  with the style score (see above), **leave-one-image-out**: recall **1.000** on all
+  three scans, leak 2/49, 19/57, 0/54 (dirty_03's leak is its thick-pen overwrites).
+  In-sample (shipped model): dirty_02/03/04 all **exact**, all handwriting dropped.
+- The old score-only largest-gap cut also silently **corrupted printed pages** when
+  `--use-style` was (mis)applied to them: it false-split `0-sudoku` and 3 of 4 grids
+  on the 4-per-page sheet (themed/unfamiliar fonts get outlier scores with a clean
+  gap). With the two gates, `--use-style` output is **byte-identical to the default
+  pipeline on all 11 printed samples** — the flag is now safe to leave on for
+  unknown B&W input.
+- Pencil/ink pages (`dirty_01/05/06/07`, never seen by the style model) do trip the
+  gates correctly out-of-sample, but the shape split leaks 1–6 cells and drops one
+  given on dirty_05 — the intensity/saturation path stays the right regime there.
 
 **Bugs fixed along the way**: `_style_keep` uint8 quantization placed the cut at a cluster
 edge (dropped 6 givens) → largest-gap split; `extract(use_style=)` didn't imply
@@ -212,23 +236,25 @@ edge (dropped 6 givens) → largest-gap split; `extract(use_style=)` didn't impl
 
 ## What still can be tried (Tier 3)
 
-1. **More labeled scans — the single biggest lever.** ~**20–40** filled pages spanning
-   handwriting styles / books / scanners, labeled via their printed-givens strings (add
-   to `REAL_SAMPLES`; extraction is automatic). 3 scans overfit; volume + diversity is
-   what closes the generalization gap.
-2. **Soft cut for overlap.** `_style_keep`'s largest-gap rule is too strict on unseen
-   data (no clean gap → no split). An **Otsu-valley** cut tolerates overlap — earlier
-   measured ≈ **95% givens recovered / ~20% handwriting leak** per grid. Trade strictness
-   vs. leak; possibly expose as a parameter.
+1. **More labeled scans — still the biggest lever for the residual leak.** ~**20–40**
+   filled pages spanning handwriting styles / books / scanners, labeled via their
+   printed-givens strings (add to `REAL_SAMPLES`; extraction is automatic). Recall is
+   solved by the width fusion; more data is what shrinks dirty_03-style leak (19/57)
+   on unseen scans.
+2. ~~Soft cut for overlap~~ / ~~per-grid calibration of `style_score`~~ — **superseded**
+   by the stroke-width fusion: the per-grid z-scoring *is* the calibration, and the
+   2-means split *is* the soft cut. (Done 2026-06.)
 3. **CNN / better features** for the style head once a real labeled set exists — HOG was
    chosen to reuse the digit pipeline, but shape discrimination of print vs hand may want
    richer features. Keep SVM as the offline default.
-4. **Per-grid calibration of `style_score`.** The margin carries a per-scan offset;
-   normalizing per grid (e.g. subtract the median, or fit 2 clusters) before cutting may
-   recover separation on unseen scans without more data.
+4. **Same-width pen blind spot.** The `SW_RATIO_GATE` assumes print is thicker than the
+   pen; a marker matching the print's stroke weight would keep the gate shut and nothing
+   splits (safe failure: output includes handwriting, conflicts warn). Only the style
+   score can cover this — needs the data from #1.
 5. **dirty_03 scribbles / overwrites.** Where handwriting overwrites a printed cell the
    connected components merge — likely unrecoverable without stroke-level separation
-   (stroke-width transform / inpainting). Treat as a known hard limit.
+   (stroke-width transform / inpainting). Treat as a known hard limit. Its 19-cell LOO
+   leak is dominated by these thick overwrite blobs.
 
 ## Coverage today
 
@@ -236,7 +262,9 @@ edge (dropped 6 givens) → largest-gap split; `extract(use_style=)` didn't impl
 |---|---|---|---|
 | `dirty_01/06/07` | 1 (pencil) | givens recovered | n/a |
 | `dirty_05` | 2 (blue ink) | givens recovered (1 residual misread) | n/a |
-| `dirty_02/03/04` | 3 (dark pen) | not separable | exact **in-sample only**; needs more data to generalize |
+| `dirty_02/03/04` | 3 (dark pen) | not separable | **exact** in-sample; LOO recall 1.000, leak 2/19/0 cells |
 
 Tier-1/2 regression tests for `dirty_01/05/06/07` are in `tests/test_pipeline.py`. Tier-3
-is not asserted (in-sample = memorization; would just lock the model file).
+end-to-end is not asserted (the shipped model is in-sample there; would just lock the
+model file), but the gate logic itself is unit-tested model-free
+(`test_style_keep_uniform_grid_kept_whole`, `test_style_keep_splits_two_ink_sources`).

@@ -15,7 +15,9 @@ import cv2
 import numpy as np
 
 from .detect import SIZE
-from .recognize import binarize, extract_glyph, style_model_available, style_score
+from .recognize import (
+    binarize, extract_glyph, stroke_width, style_model_available, style_score,
+)
 
 INSET = 0.06  # fraction of each cell trimmed inside its boundaries before glyph search
 
@@ -24,6 +26,11 @@ SAT_THRESH = 50         # mean HSV saturation above this = colored ink (pen), no
 PENCIL_GAP = 35         # min dark/light intensity-cluster gap before trusting a split
 STYLE_GAP = 0.35        # min printed/handwritten style-score cluster gap before splitting
                         # (style_score has a per-scan offset, so the cut is adaptive)
+SW_RATIO_GATE = 1.38    # min thick/thin stroke-width cluster ratio that signals two ink
+                        # sources; fully-printed grids measure <= 1.31, mixed >= 1.45
+STYLE_AGREE = 0.8       # the thin-stroke cluster must also style-score this much more
+                        # handwritten on average, else the width split is warp/JPEG noise
+                        # (clean grids <= +0.47, handwriting-bearing grids >= +1.44)
 
 # Grid lines run continuously across the whole warped grid, so a long 1-D opening
 # isolates them while leaving digits (which never span this length) intact. Removing
@@ -117,22 +124,60 @@ def _printed_mask(intensities: list[float], saturations: list[float]) -> list[bo
     return out
 
 
-def _style_keep(scores: list[float]) -> list[bool]:
-    """Keep the lower (more printed) style-score cluster, adaptively.
+def _kmeans2(values) -> np.ndarray:
+    """1-D 2-means; boolean array marking the high cluster."""
+    v = np.asarray(values, np.float64)
+    c0, c1 = float(v.min()), float(v.max())
+    if c0 == c1:
+        return np.zeros(len(v), bool)
+    for _ in range(50):
+        hi = np.abs(v - c1) < np.abs(v - c0)
+        if not hi.any() or hi.all():
+            break
+        nc0, nc1 = float(v[~hi].mean()), float(v[hi].mean())
+        if (nc0, nc1) == (c0, c1):
+            break
+        c0, c1 = nc0, nc1
+    return np.abs(v - c1) < np.abs(v - c0)
 
-    ``style_score`` carries a per-scan offset, so a fixed cutoff is unreliable; a 1-D
-    split self-centers per grid. The printed and handwritten scores form two clusters
-    separated by a gap, so cut at the largest gap and keep the lower side. Only splits
-    when that gap is clear, so a single-style grid (all printed) is kept whole.
+
+def _style_keep(scores: list[float], widths: list[float]) -> list[bool]:
+    """Keep the printed cluster using stroke width fused with the style score.
+
+    Print and handwriting on one page come from different ink sources, so their
+    stroke widths form two clusters. The split only fires when both gates pass:
+    the thick/thin ratio clears ``SW_RATIO_GATE`` (a fully-printed grid is one tight
+    cluster) *and* the thin cluster also style-scores more handwritten by
+    ``STYLE_AGREE`` (warped or noisy print can vary in width, but then the two width
+    clusters look equally printed to the style model). When both fire, glyphs are
+    split by 2-means on ``z(width) - z(score)`` (printed = thicker strokes + lower
+    style score) — the z-scoring self-centers per grid, which the raw ``style_score``
+    (per-scan offset) cannot do.
+
+    The gates are the sole trigger: without them the style score alone false-splits
+    clean grids whose glyphs the model finds unfamiliar (e.g. themed digital fonts).
+    Once fired, the style score's largest-gap cut (``STYLE_GAP``) also applies on
+    top — on a scan the model knows it removes the handwriting the width fusion lets
+    through, and on an unseen scan with no clear gap it is a no-op.
     """
     if len(scores) < 4:
         return [True] * len(scores)
-    s = sorted(scores)
-    gap, i = max((s[k + 1] - s[k], k) for k in range(len(s) - 1))
-    if gap < STYLE_GAP:
-        return [True] * len(scores)
-    cut = (s[i] + s[i + 1]) / 2
-    return [v <= cut for v in scores]
+    keep = np.ones(len(scores), bool)
+    w = np.asarray(widths, np.float64)
+    sc = np.asarray(scores, np.float64)
+    hi = _kmeans2(w)
+    if (hi.any() and not hi.all()
+            and w[hi].mean() >= SW_RATIO_GATE * w[~hi].mean()
+            and sc[~hi].mean() - sc[hi].mean() >= STYLE_AGREE):
+        def z(v):
+            v = np.asarray(v, np.float64)
+            return (v - v.mean()) / (v.std() + 1e-9)
+        keep &= _kmeans2(z(w) - z(scores))
+        s = sorted(scores)
+        gap, i = max((s[k + 1] - s[k], k) for k in range(len(s) - 1))
+        if gap >= STYLE_GAP:
+            keep &= np.asarray(scores) <= (s[i] + s[i + 1]) / 2
+    return list(keep)
 
 
 def iter_cells(warped: np.ndarray, printed_only: bool = False,
@@ -186,7 +231,8 @@ def iter_cells(warped: np.ndarray, printed_only: bool = False,
         # in intensity *and* hue (and JPEG chroma fringing makes saturation unreliable);
         # intensity+saturation for pencil / colored ink. They conflict, so pick one.
         if use_style and style_model_available():
-            keep = _style_keep([style_score(c[1]) for c in present])
+            keep = _style_keep([style_score(c[1]) for c in present],
+                               [stroke_width(c[1]) for c in present])
         else:
             if use_style and stats is not None:
                 stats["style_missing"] = True  # fall back to intensity/saturation

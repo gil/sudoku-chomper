@@ -137,3 +137,24 @@ def test_printed_only_blue_ink():
 def test_printed_only_leaves_default_untouched():
     """Without the flag a fully-filled scan still reads as solved -> skipped (no --all)."""
     assert extract(s("dirty_01.jpg")) == []
+
+
+# _style_keep gate behavior (model-free): the stroke-width fusion must only fire when
+# the grid really holds two ink sources.
+
+def test_style_keep_uniform_grid_kept_whole():
+    """One font, one ink: tight widths + tight scores -> nothing is dropped."""
+    from sudoku_chomper.cells import _style_keep
+
+    scores = [-1.2, -1.1, -1.3, -1.15, -1.25, -1.18]
+    widths = [6.0, 6.2, 5.9, 6.1, 6.0, 6.05]
+    assert _style_keep(scores, widths) == [True] * 6
+
+
+def test_style_keep_splits_two_ink_sources():
+    """Thick print + thin pen with matching style scores -> thin cluster dropped."""
+    from sudoku_chomper.cells import _style_keep
+
+    scores = [-1.0, -1.1, -0.9, 0.8, 0.9, 1.0]
+    widths = [6.0, 6.2, 5.8, 2.0, 2.2, 1.9]
+    assert _style_keep(scores, widths) == [True, True, True, False, False, False]
