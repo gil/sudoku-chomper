@@ -47,6 +47,19 @@ def extract(path: str, include_all: bool = False, debug: bool = False,
         debug_dir = tempfile.mkdtemp(prefix="sudoku_chomper_")
         print(f"# debug crops -> {debug_dir}", file=sys.stderr)
 
+    results = _scan(grids, path, include_all, debug_dir, printed_only, use_style)
+    if not results and use_style:
+        # --use-style gives cleaner glyphs but sometimes drops a whole grid the
+        # intensity/saturation path would have caught; retry without it.
+        print(f"# warning [{path}]: --use-style found no puzzle; "
+              "falling back to --printed-only (may include a few handwritten cells)",
+              file=sys.stderr)
+        results = _scan(grids, path, include_all, debug_dir, printed_only, use_style=False)
+    return results
+
+
+def _scan(grids, path: str, include_all: bool, debug_dir: str | None,
+          printed_only: bool, use_style: bool) -> list[str]:
     results: list[str] = []
     for idx, grid in enumerate(grids):
         warped, color_warped = grid if printed_only else (grid, None)
