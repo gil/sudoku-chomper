@@ -71,8 +71,9 @@ def _scan(grids, path: str, include_all: bool, debug_dir: str | None,
                   "fell back to intensity/saturation. Run: "
                   "python -m sudoku_chomper.train_style", file=sys.stderr)
         if stats.get("filtered"):
+            mode = "--use-style" if use_style and not stats.get("style_missing") else "--printed-only"
             print(f"# note [{path}]: dropped {stats['filtered']} handwritten cell(s) "
-                  f"from grid {idx} (--printed-only)", file=sys.stderr)
+                  f"from grid {idx} ({mode})", file=sys.stderr)
         n = validate.filled_count(puzzle)
         if n < MIN_CLUES:
             continue  # not a plausible Sudoku grid
