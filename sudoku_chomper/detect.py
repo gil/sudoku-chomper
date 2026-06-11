@@ -24,10 +24,10 @@ def _order_corners(pts: np.ndarray) -> np.ndarray:
     )
 
 
-def _warp(gray: np.ndarray, corners: np.ndarray) -> np.ndarray:
+def _warp(img: np.ndarray, corners: np.ndarray) -> np.ndarray:
     dst = np.array([[0, 0], [SIZE - 1, 0], [SIZE - 1, SIZE - 1], [0, SIZE - 1]], np.float32)
     M = cv2.getPerspectiveTransform(_order_corners(corners), dst)
-    return cv2.warpPerspective(gray, M, (SIZE, SIZE))
+    return cv2.warpPerspective(img, M, (SIZE, SIZE))
 
 
 def _line_mask(gray: np.ndarray) -> np.ndarray:
@@ -104,9 +104,17 @@ def _content_bbox(mask: np.ndarray) -> np.ndarray | None:
     return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], np.float32)
 
 
-def find_grids(image: np.ndarray) -> list[np.ndarray]:
-    """Return warped grayscale grid crops (SIZE×SIZE), ordered for reading."""
+def find_grids(image: np.ndarray, return_color: bool = False):
+    """Warped grid crops (SIZE×SIZE), ordered top-to-bottom, left-to-right.
+
+    Default: ``list[gray]``. With ``return_color`` (for printed/handwritten
+    discrimination, which needs ink hue): ``list[(gray, color)]``, the color crop
+    warped from the same corners — the BGR original is required for that path.
+    """
     gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    color = image if image.ndim == 3 else None
+    if return_color and color is None:
+        raise ValueError("return_color requires a BGR image, got grayscale")
     mask = _line_mask(gray)
     cands = _dedup(_square_candidates(mask, gray.shape[0] * gray.shape[1]))
 
@@ -117,7 +125,8 @@ def find_grids(image: np.ndarray) -> list[np.ndarray]:
     grids = []
     for c in cands:
         cx, cy = c.reshape(-1, 2).mean(axis=0)
-        grids.append((cy, cx, _warp(gray, c)))
+        crop = (_warp(gray, c), _warp(color, c)) if return_color else _warp(gray, c)
+        grids.append((cy, cx, crop))
 
     # Top-to-bottom, left-to-right: bucket centers into row bands, then by x.
     band = max(1.0, image.shape[0] * 0.15)

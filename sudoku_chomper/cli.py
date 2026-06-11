@@ -19,9 +19,10 @@ MIN_CLUES = 17  # fewest givens a proper Sudoku can have; filters false-positive
 MAX_CONFLICTS = 10  # above this a "grid" is a page frame / unrecoverable warp, not a puzzle
 
 
-def grid_to_string(warped: np.ndarray, debug_dir: str | None = None, idx: int = 0) -> str:
+def grid_to_string(warped: np.ndarray, debug_dir: str | None = None, idx: int = 0,
+                   printed_only: bool = False, color_warped: np.ndarray | None = None) -> str:
     digits = ["0"] * 81
-    for i, glyph in iter_cells(warped):
+    for i, glyph in iter_cells(warped, printed_only=printed_only, color_warped=color_warped):
         if glyph is not None:
             d = predict_glyph(glyph)
             if d:
@@ -33,9 +34,10 @@ def grid_to_string(warped: np.ndarray, debug_dir: str | None = None, idx: int = 
     return "".join(digits)
 
 
-def extract(path: str, include_all: bool = False, debug: bool = False) -> list[str]:
+def extract(path: str, include_all: bool = False, debug: bool = False,
+            printed_only: bool = False) -> list[str]:
     image = load_image(path)
-    grids = find_grids(image)
+    grids = find_grids(image, return_color=printed_only)
 
     debug_dir = None
     if debug:
@@ -43,8 +45,9 @@ def extract(path: str, include_all: bool = False, debug: bool = False) -> list[s
         print(f"# debug crops -> {debug_dir}", file=sys.stderr)
 
     results: list[str] = []
-    for idx, warped in enumerate(grids):
-        puzzle = grid_to_string(warped, debug_dir, idx)
+    for idx, grid in enumerate(grids):
+        warped, color_warped = grid if printed_only else (grid, None)
+        puzzle = grid_to_string(warped, debug_dir, idx, printed_only, color_warped)
         n = validate.filled_count(puzzle)
         if n < MIN_CLUES:
             continue  # not a plausible Sudoku grid
@@ -67,9 +70,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("image", help="path to the image file")
     parser.add_argument("--all", action="store_true", help="also print fully-solved grids")
     parser.add_argument("--debug", action="store_true", help="dump warped grids / cell crops")
+    parser.add_argument("--printed-only", action="store_true",
+                        help="keep only printed givens, ignore handwritten answers")
     args = parser.parse_args(argv)
 
-    results = extract(args.image, include_all=args.all, debug=args.debug)
+    results = extract(args.image, include_all=args.all, debug=args.debug,
+                      printed_only=args.printed_only)
     if not results:
         print("# no Sudoku grid detected", file=sys.stderr)
         return 1

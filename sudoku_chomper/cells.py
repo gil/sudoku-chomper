@@ -19,6 +19,10 @@ from .recognize import binarize, extract_glyph
 
 INSET = 0.06  # fraction of each cell trimmed inside its boundaries before glyph search
 
+# printed/handwritten discrimination (only used when printed_only is requested)
+SAT_THRESH = 50         # mean HSV saturation above this = colored ink (pen), not print
+PENCIL_GAP = 35         # min dark/light intensity-cluster gap before trusting a split
+
 # Grid lines run continuously across the whole warped grid, so a long 1-D opening
 # isolates them while leaving digits (which never span this length) intact. Removing
 # them stops skewed line fragments from being read as "1"s.
@@ -80,19 +84,58 @@ def _ten_boundaries(profile: np.ndarray) -> list[float]:
     return even
 
 
-def iter_cells(warped: np.ndarray):
+def _printed_mask(intensities: list[float], saturations: list[float]) -> list[bool]:
+    """Pick which glyphs are printed (dark, achromatic ink) vs handwritten.
+
+    Colored ink (high saturation) is dropped outright; among the achromatic remainder
+    a 1-D Otsu split on intensity drops the light (pencil) cluster, but only when the
+    two clusters are clearly separated — a fully-printed grid is one tight cluster and
+    must be kept whole.
+    """
+    n = len(intensities)
+    achromatic = [s < SAT_THRESH for s in saturations]
+
+    inten = [intensities[i] for i in range(n) if achromatic[i]]
+    keep_dark = [True] * len(inten)
+    if len(inten) >= 4:
+        vals = np.array(inten, np.uint8).reshape(-1, 1)
+        thr, _ = cv2.threshold(vals, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        dark = [v for v in inten if v <= thr]
+        light = [v for v in inten if v > thr]
+        if dark and light and (np.mean(light) - np.mean(dark)) >= PENCIL_GAP:
+            keep_dark = [v <= thr for v in inten]
+
+    out, k = [], 0
+    for i in range(n):
+        if not achromatic[i]:
+            out.append(False)
+        else:
+            out.append(keep_dark[k])
+            k += 1
+    return out
+
+
+def iter_cells(warped: np.ndarray, printed_only: bool = False,
+               color_warped: np.ndarray | None = None):
     """Yield (index 0–80, glyph mask or None) for all 81 cells.
 
-    A ``None`` glyph means the cell is empty.
+    A ``None`` glyph means the cell is empty. With ``printed_only`` (needs
+    ``color_warped``), handwritten answers — light pencil or colored ink — are also
+    returned as ``None`` so only printed givens survive.
     """
     eq = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(warped)
     binary = binarize(eq)
     lines = grid_lines(binary)
     clean = cv2.subtract(binary, lines)
+    # Features for printed/handwritten discrimination come from the *pre-CLAHE* warp,
+    # since CLAHE destroys the absolute intensity that separates print from pencil.
+    sat = (cv2.cvtColor(color_warped, cv2.COLOR_BGR2HSV)[:, :, 1]
+           if printed_only and color_warped is not None else None)
 
     bx = _ten_boundaries(lines.sum(axis=0))
     by = _ten_boundaries(lines.sum(axis=1))
 
+    cells = []  # (index, glyph, mean_intensity, mean_saturation)
     for row in range(9):
         for col in range(9):
             ch = by[row + 1] - by[row]
@@ -102,4 +145,21 @@ def iter_cells(warped: np.ndarray):
             x0 = int(bx[col] + cw * INSET)
             x1 = int(bx[col + 1] - cw * INSET)
             glyph = extract_glyph(clean[y0:y1, x0:x1])
-            yield row * 9 + col, glyph
+            idx = row * 9 + col
+            if not printed_only or glyph is None:
+                cells.append((idx, glyph, 0.0, 0.0))
+                continue
+            ink = glyph > 0
+            mi = float(warped[y0:y1, x0:x1][ink].mean())
+            ms = float(sat[y0:y1, x0:x1][ink].mean()) if sat is not None else 0.0
+            cells.append((idx, glyph, mi, ms))
+
+    if printed_only:
+        present = [c for c in cells if c[1] is not None]
+        keep = _printed_mask([c[2] for c in present], [c[3] for c in present])
+        drop = {present[i][0] for i in range(len(present)) if not keep[i]}
+        for idx, glyph, _, _ in cells:
+            yield idx, (None if idx in drop else glyph)
+    else:
+        for idx, glyph, _, _ in cells:
+            yield idx, glyph

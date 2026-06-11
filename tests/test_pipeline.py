@@ -101,3 +101,39 @@ def test_output_is_valid_sudoku_shape(name):
     for puzzle in extract(s(name)):
         assert len(puzzle) == 81
         assert set(puzzle) <= set("0123456789")
+
+
+# --printed-only: filled-in books where only the printed givens should survive.
+# Tier 1 (light pencil) and Tier 2 (blue ink) are handled by the intensity +
+# saturation heuristic. Tier 3 (dark-pen handwriting: dirty_02/03/04) is a known
+# limit — the marks are as dark and achromatic as print — and is not asserted.
+
+def test_printed_only_light_pencil():
+    """dirty_01 (= old page_018): bold printed givens, faint gray pencil answers."""
+    assert extract(s("dirty_01.jpg"), printed_only=True) == [
+        "000078002006300007530000060001000020005080600040000000080000074400002300100760000"
+    ]
+
+
+def test_printed_only_pencil_dirty_06():
+    assert extract(s("dirty_06.jpg"), printed_only=True) == [
+        "450000006000020004009800120070008000000000090000900070025004700700050000100000069"
+    ]
+
+
+def test_printed_only_pencil_dirty_07():
+    assert extract(s("dirty_07.jpg"), printed_only=True) == [
+        "000002080005000400020600090500060200000408000009030005080001030006000708000300000"
+    ]
+
+
+def test_printed_only_blue_ink():
+    """dirty_05: black printed givens, blue-pen answers — saturation drops the ink."""
+    assert extract(s("dirty_05.png"), printed_only=True) == [
+        "500040007082900000040600140018500000600020003000003690001009060000005480200010005"
+    ]
+
+
+def test_printed_only_leaves_default_untouched():
+    """Without the flag a fully-filled scan still reads as solved -> skipped (no --all)."""
+    assert extract(s("dirty_01.jpg")) == []
