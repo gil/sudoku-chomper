@@ -22,7 +22,7 @@ result, and what is still worth trying. Parked here for future work.
 | `492637751…jpg` | newspaper photo | ~65% (perspective straddle) |
 | `v4-460px…jpg` | colored grid + pencil occlusion | **not read** (warp shear → filtered, no output) |
 
-13 regression tests pass (`tests/test_pipeline.py`). Imperfect grids are flagged by the
+23 regression tests pass (`tests/test_pipeline.py`). Imperfect grids are flagged by the
 row/col/box validity warnings in `validate.py`; grids with ≥10 conflicts (page frames,
 unrecoverable warps) are dropped instead of emitting garbage.
 
@@ -154,9 +154,10 @@ fail the `MIN_CLUES = 17` filter.
 
 # Printed vs handwritten: keeping only the printed givens
 
-Filled-in book scans (the `dirty_*` samples) carry the original **printed givens** plus a
-user's **handwritten answers**. Goal: extract only the printed givens. `--printed-only`
-(and the experimental `--use-style`) implement this. Glyph extraction + digit OCR are
+Filled-in book scans (the `dirty_*` and labeled puzzle samples) carry the original
+**printed givens** plus a user's **handwritten answers**. Goal: extract only the printed
+givens. This is **always on — no flags** (the old `--printed-only` / `--use-style` flags
+were removed 2026-06; the filter auto-selects per grid). Glyph extraction + digit OCR are
 already correct on the printed givens (dirty_02 32/32, dirty_03 24/24, dirty_04 27/27);
 the only problem is the **print-vs-handwriting decision**.
 
@@ -164,18 +165,41 @@ the only problem is the **print-vs-handwriting decision**.
 
 | Tier | Samples | Handwriting vs print | Separating signal | Status |
 |---|---|---|---|---|
-| 1 | `dirty_01/06/07` | faint grey **pencil** vs bold print | grayscale **intensity** | works |
+| 1 | `dirty_01/06/07`, Puzzle 7/8/13 | faint grey **pencil** vs bold print | grayscale **intensity** | works |
 | 2 | `dirty_05` | **blue/colored ink** vs black print | HSV **saturation** | works |
-| 3 | `dirty_02/03/04` | **dark pen**, B&W scan — same darkness *and* hue | glyph **shape** only | experimental |
+| 3 | `dirty_02/03/04` | **dark pen**, B&W scan — same darkness *and* hue | glyph **shape** only | auto-selected, in-sample only |
+
+## How the filter is selected (`cells._select_keep`)
+
+The two regimes **conflict** (a B&W shape filter wrongly drops pencil givens; the
+intensity split false-fires on clean print), so exactly one is chosen per grid:
+
+1. **Handwriting detector = the style model's stroke-width gate.** `_style_keep` only
+   drops cells when two ink sources are actually present (see gates below). If it drops
+   **nothing**, the grid is clean / all-printed → **keep every glyph**. This is what
+   protects clean grids: the intensity split alone *false-fires* on printed pages with
+   tonal variation (`s-l1200`, the 4-up colored sheet, solution grids all show
+   intensity-drops with style-drops = 0), so a lone intensity split is never trusted.
+2. **Handwriting present → pick the accurate filter.** Use intensity/saturation
+   (`_printed_mask`) by default; switch to the style mask only when it drops **far more**
+   than intensity (`style_drops ≥ 1.5 × intensity_drops` **and** `≥ 10` more cells) — the
+   signature of a dark-pen page where intensity stayed flat. On pencil pages the two drop
+   counts are comparable (intensity wins, no leak); on `dirty_03/04` style drops ~50 vs
+   intensity ~1–23 → style is selected automatically.
+3. **Whole-grid safety net.** If the auto-selected style filter blanks a grid (drops
+   below `MIN_CLUES`), `cli.extract` retries it pinned to intensity (`force_intensity`).
+
+Constants `STYLE_OVER_INTENSITY` / `STYLE_DROP_MARGIN` in `cells.py` are the selector
+thresholds, alongside the existing gate constants.
 
 ## What was built
 
-- **`--printed-only`** (default path, Tiers 1–2). In `cells.iter_cells`, each glyph is
-  scored on the **pre-CLAHE** warp (CLAHE destroys absolute intensity):
+- **Intensity + saturation path** (`_printed_mask`, Tiers 1–2). Each glyph is scored on
+  the **pre-CLAHE** warp (CLAHE destroys absolute intensity):
   - **Saturation** filter drops colored ink (`SAT_THRESH`).
-  - **Adaptive intensity split** (`_printed_mask`): 1-D Otsu over the grid's glyph
-    intensities, drop the light (pencil) cluster — only when the dark/light cluster gap
-    clears `PENCIL_GAP`, so a fully-printed grid is kept whole.
+  - **Adaptive intensity split**: 1-D Otsu over the grid's glyph intensities, drop the
+    light (pencil) cluster — only when the dark/light cluster gap clears `PENCIL_GAP`,
+    so a fully-printed grid is kept whole.
   - **Quantization bug (fixed 2026-06):** Otsu ran on uint8-truncated intensities but
     the keep test compared the floats, so a printed given landing on the integer
     threshold (e.g. 50.6 vs thr 50) was dropped. Two labeled rescans (Puzzle 8 / 13
@@ -185,14 +209,15 @@ the only problem is the **print-vs-handwriting decision**.
     leak (a faint blue 5, saturation 37, misread as a given 4). All split decisions
     now happen in the quantized domain.
   Needs the BGR warp, so `detect.find_grids(image, return_color=True)` carries a color
-  crop on the same corners (default gray path untouched → existing tests byte-identical).
-- **`--use-style`** (Tier 3). A binary **printed-vs-handwritten SVM**
-  (`train_style.py` → `models/style_svm.joblib`) over the shared HOG features:
+  crop on the same corners.
+- **Style path** (`_style_keep`, Tier 3, also the handwriting *detector* for all tiers).
+  A binary **printed-vs-handwritten SVM** (`train_style.py` → `models/style_svm.joblib`)
+  over the shared HOG features:
   - printed class = synthetic font renders (reuses `train.py`),
   - handwritten class = MNIST 1–9 **+ real labeled glyphs** from `REAL_SAMPLES`
     (the `dirty_02/03/04` ground-truth strings, auto-extracted and augmented).
   `recognize.style_score` returns a signed margin (`<0` printed, `>0` handwritten);
-  `cells._style_keep` fuses it with **median stroke width** (`recognize.stroke_width`,
+  `_style_keep` fuses it with **median stroke width** (`recognize.stroke_width`,
   2× median distance-transform over the ink — print and pen come from different ink
   sources, so widths form two clusters). The split fires only when two gates pass:
   width-cluster ratio ≥ `SW_RATIO_GATE` (1.38; printed-only grids measure ≤ 1.31,
@@ -200,16 +225,20 @@ the only problem is the **print-vs-handwriting decision**.
   handwritten (clean grids ≤ +0.47, handwriting-bearing ≥ +1.44 — kills false fires
   on warped/JPEG-noisy print where width alone wobbles). When fired, glyphs split by
   2-means on `z(width) − z(style_score)` — the z-scoring self-centers per grid, which
-  fixes the per-scan score offset — intersected with the old largest-gap score cut.
-- **Regimes are exclusive**: `--use-style` filters by **shape only** and *skips*
-  intensity/saturation, because on a B&W JPEG the bold print edges pick up **chroma
-  fringing** (saturation ≈ 80 > 50) and the saturation filter would wrongly drop the
-  printed givens. Pencil/ink and dark-pen are different regimes; pick one.
-- **Notice**: when `--printed-only` drops any cell, `cli.extract` prints a
-  `# note … dropped N handwritten cell(s)` to stderr (via the `stats` dict threaded
-  through `iter_cells`). Output is unchanged; it just flags that filtering happened.
+  fixes the per-scan score offset — intersected with the largest-gap score cut. These
+  gates are exactly why the gate doubles as the handwriting detector in `_select_keep`.
+- **Why shape-only on B&W:** the style path *skips* intensity/saturation, because on a
+  B&W JPEG the bold print edges pick up **chroma fringing** (saturation ≈ 80 > 50) and
+  the saturation filter would wrongly drop the printed givens.
+- **Style model required.** With no `style_svm.joblib`, `_select_keep` can't run the
+  detector and falls back to intensity-only (warns on stderr) — which false-fires on
+  clean grids. The Docker build and Setup both build it.
+- **Notice**: when filtering drops any cell, `cli.extract` prints a
+  `# note … dropped N handwritten cell(s) … (<path> filter)` to stderr (via the `stats`
+  dict threaded through `iter_cells`, which also records the selected path). Output is
+  unchanged; it just flags that filtering happened.
 
-## What was measured (Tier 3 / `--use-style`)
+## What was measured (style head)
 
 - **MNIST-only** handwritten class: separation ≈ **0.5**, distributions overlap heavily
   (real B&W book glyphs look more "printed" than MNIST). Not usable; also false-split
@@ -218,7 +247,7 @@ the only problem is the **print-vs-handwriting decision**.
   all **exact**.
 - **+ real labeled glyphs, leave-one-image-out** (test scan unseen): **recall is perfect**
   (all givens kept) but it **keeps ~all handwriting too** — on an unseen scan the scores
-  don't form a clean gap, so the old largest-gap cut no-ops. With only 3 scans the
+  don't form a clean gap, so the largest-gap cut no-ops. With only 3 scans the
   classifier **overfits per-scan and does not generalize**.
 - **Stroke-width fusion (current).** Probing per-glyph features against the
   dirty_02/03/04 ground truth: **median stroke width** is by far the strongest single
@@ -228,57 +257,65 @@ the only problem is the **print-vs-handwriting decision**.
   with the style score (see above), **leave-one-image-out**: recall **1.000** on all
   three scans, leak 2/49, 19/57, 0/54 (dirty_03's leak is its thick-pen overwrites).
   In-sample (shipped model): dirty_02/03/04 all **exact**, all handwriting dropped.
-- The old score-only largest-gap cut also silently **corrupted printed pages** when
-  `--use-style` was (mis)applied to them: it false-split `0-sudoku` and 3 of 4 grids
-  on the 4-per-page sheet (themed/unfamiliar fonts get outlier scores with a clean
-  gap). With the two gates, `--use-style` output is **byte-identical to the default
-  pipeline on all 11 printed samples** — the flag is now safe to leave on for
-  unknown B&W input.
-- Pencil/ink pages (`dirty_01/05/06/07`, never seen by the style model) do trip the
-  gates correctly out-of-sample, but the shape split leaks 1–6 cells and drops one
-  given on dirty_05 — the intensity/saturation path stays the right regime there.
+- **Auto-selection makes the style path safe to leave always on.** The two gates make
+  `_style_keep` byte-identical to no-filter on all clean printed samples (it stays
+  silent), and `_select_keep` only *applies* the style mask when it dominates intensity.
+  Earlier, the score-only largest-gap cut silently **corrupted printed pages** (false-split
+  `0-sudoku` and 3 of 4 grids on the 4-up sheet); the gates plus the selector remove that.
+- Pencil/ink pages (`dirty_01/05/06/07`, Puzzle 7/8/13) trip the gates correctly
+  out-of-sample, but the *style* split alone leaks 1–6 cells — which is why the selector
+  keeps them on the intensity/saturation path (comparable drop counts → intensity wins).
 
 **Bugs fixed along the way**: `_style_keep` uint8 quantization placed the cut at a cluster
-edge (dropped 6 givens) → largest-gap split; `extract(use_style=)` didn't imply
-`printed_only`; saturation filter backfiring on B&W (the regime split).
+edge (dropped 6 givens) → largest-gap split; saturation filter backfiring on B&W (the
+regime split); the intensity split false-firing on clean print → gated behind the style
+detector in `_select_keep` (2026-06).
 
-## What still can be tried (Tier 3)
+## What still can be tried (style head)
 
 1. **More labeled scans — still the biggest lever for the residual leak.** ~**20–40**
    filled pages spanning handwriting styles / books / scanners, labeled via their
    printed-givens strings (add to `REAL_SAMPLES`; extraction is automatic). Recall is
    solved by the width fusion; more data is what shrinks dirty_03-style leak (19/57)
-   on unseen scans.
-2. ~~Soft cut for overlap~~ / ~~per-grid calibration of `style_score`~~ — **superseded**
-   by the stroke-width fusion: the per-grid z-scoring *is* the calibration, and the
-   2-means split *is* the soft cut. (Done 2026-06.)
-3. **CNN / better features** for the style head once a real labeled set exists — HOG was
+   on unseen scans, and would let Tier-3 be asserted out-of-sample.
+2. **CNN / better features** for the style head once a real labeled set exists — HOG was
    chosen to reuse the digit pipeline, but shape discrimination of print vs hand may want
    richer features. Keep SVM as the offline default.
-4. **Same-width pen blind spot.** The `SW_RATIO_GATE` assumes print is thicker than the
-   pen; a marker matching the print's stroke weight would keep the gate shut and nothing
+3. **Same-width pen blind spot.** The `SW_RATIO_GATE` assumes print is thicker than the
+   pen; a marker matching the print's stroke weight keeps the gate shut and nothing
    splits (safe failure: output includes handwriting, conflicts warn). Only the style
    score can cover this — needs the data from #1.
-5. **dirty_03 scribbles / overwrites.** Where handwriting overwrites a printed cell the
+4. **dirty_03 scribbles / overwrites.** Where handwriting overwrites a printed cell the
    connected components merge — likely unrecoverable without stroke-level separation
    (stroke-width transform / inpainting). Treat as a known hard limit. Its 19-cell LOO
    leak is dominated by these thick overwrite blobs.
+5. **Selector thresholds from more data.** `STYLE_OVER_INTENSITY` / `STYLE_DROP_MARGIN`
+   were set from the handful of bundled pages; `dirty_02` (intensity 54 vs style 49)
+   stays on intensity and remains a known limit. More labeled mixed pages would let the
+   intensity-vs-style switch be tuned (or learned) rather than hand-set.
 
-## Coverage today
+## Coverage today (all auto-selected, no flags)
 
-| Sample | Tier | `--printed-only` | `--use-style` |
+| Sample | Tier | Selected path | Result |
 |---|---|---|---|
-| `dirty_01/06/07` | 1 (pencil) | exact (post quantization fix) | n/a |
-| `dirty_05` | 2 (blue ink) | exact (post quantization fix) | n/a |
-| `850…035.jpg` (Puzzle 8) | 1 (heavy pencil) | **exact** (label corrected: r1c9 is a printed given) | leaks 3 heavy-pencil cells |
-| `000…000.jpg` (Puzzle 13, dirty_07 rescan) | 1 (pencil) | **exact** | leaks 2 cells |
-| `dirty_02/03/04` | 3 (dark pen) | not separable | **exact** in-sample; LOO recall 1.000, leak 2/19/0 cells |
+| `dirty_01/06/07` | 1 (pencil) | intensity | exact (post quantization fix) |
+| `dirty_05` | 2 (blue ink) | intensity | exact (post quantization fix) |
+| `098…480.jpg` (Puzzle 7) | 1 (pencil) | intensity | **exact** |
+| `850…035.jpg` (Puzzle 8) | 1 (heavy pencil) | intensity | **exact** (label corrected: corner is a printed 5) |
+| `000…030…000.jpg` (Puzzle 13, dirty_07 rescan) | 1 (pencil) | intensity | **exact** |
+| `dirty_02` | 3 (dark pen) | intensity | not separable — known limit |
+| `dirty_03/04` | 3 (dark pen) | style | in-sample exact; LOO recall 1.000, leak 19/0 cells |
 
-Heavy pencil pressed to near-print darkness (Puzzle 8's r1c9-adjacent cells, intensity
-gap of only 0.5 gray levels at the boundary) is the practical floor of the intensity
-signal — beyond it, only shape/stroke fusion can help.
+Heavy pencil pressed to near-print darkness (Puzzle 8's corner cells, intensity gap of
+only 0.5 gray levels at the boundary) is the practical floor of the intensity signal —
+beyond it, only shape/stroke fusion can help.
 
-Tier-1/2 regression tests for `dirty_01/05/06/07` are in `tests/test_pipeline.py`. Tier-3
-end-to-end is not asserted (the shipped model is in-sample there; would just lock the
-model file), but the gate logic itself is unit-tested model-free
-(`test_style_keep_uniform_grid_kept_whole`, `test_style_keep_splits_two_ink_sources`).
+Two mislabeled duplicate samples were dropped (2026-06): `…034…` (a handwritten 4
+labeled as a given) and `…036` (a printed 5 labeled 6) were byte-identical to the
+correctly-named `…030…` / `…035` files.
+
+Tier-1/2 regression tests (`dirty_01/05/06/07`, Puzzle 7/8/13) are in
+`tests/test_pipeline.py`, now called with no flag. Tier-3 end-to-end is not asserted (the
+shipped model is in-sample there; would just lock the model file), but the gate logic
+itself is unit-tested model-free (`test_style_keep_uniform_grid_kept_whole`,
+`test_style_keep_splits_two_ink_sources`).
