@@ -21,7 +21,7 @@ from .recognize import (
 
 INSET = 0.06  # fraction of each cell trimmed inside its boundaries before glyph search
 
-# printed/handwritten discrimination (only used when printed_only is requested)
+# printed/handwritten discrimination thresholds
 SAT_THRESH = 50         # mean HSV saturation above this = colored ink (pen), not print
 PENCIL_GAP = 35         # min dark/light intensity-cluster gap before trusting a split
 STYLE_GAP = 0.35        # min printed/handwritten style-score cluster gap before splitting
@@ -31,6 +31,14 @@ SW_RATIO_GATE = 1.38    # min thick/thin stroke-width cluster ratio that signals
 STYLE_AGREE = 0.8       # the thin-stroke cluster must also style-score this much more
                         # handwritten on average, else the width split is warp/JPEG noise
                         # (clean grids <= +0.47, handwriting-bearing grids >= +1.44)
+
+# Auto-select between the intensity/saturation filter and the style filter per grid.
+# Intensity is more accurate on pencil / colored-ink pages and no-ops on clean grids;
+# style only wins on dark-pen B&W scans where intensity can't separate the two ink
+# sources. Defer to style only when it drops far more cells than intensity (a sign
+# intensity stayed flat), else the style filter leaks handwriting on pencil pages.
+STYLE_OVER_INTENSITY = 1.5   # style_drops must exceed this multiple of intensity_drops
+STYLE_DROP_MARGIN = 10       # ...and exceed it by at least this many cells
 
 # Grid lines run continuously across the whole warped grid, so a long 1-D opening
 # isolates them while leaving digits (which never span this length) intact. Removing
@@ -182,19 +190,57 @@ def _style_keep(scores: list[float], widths: list[float]) -> list[bool]:
     return list(keep)
 
 
-def iter_cells(warped: np.ndarray, printed_only: bool = False,
-               color_warped: np.ndarray | None = None, use_style: bool = False,
-               stats: dict | None = None):
+def _select_keep(glyphs: list, intensities: list[float], saturations: list[float],
+                 stats: dict | None, force_intensity: bool) -> list[bool]:
+    """Pick which present glyphs are printed givens, auto-selecting the filter.
+
+    The style model's stroke-width gate is the handwriting *detector*: it stays silent
+    on single-ink grids, so when it drops nothing the grid is clean (or all-printed) and
+    every glyph is kept — the intensity split alone can't be trusted there, since clean
+    print with tonal variation false-fires it. Once handwriting is confirmed, two
+    regimes conflict and one is chosen: intensity + saturation for pencil / colored ink,
+    or glyph shape (style) for B&W scans where dark handwriting matches print in both
+    tone and hue. Style is trusted over intensity only when it drops far more cells (a
+    sign intensity stayed flat), else it leaks handwriting on pencil pages.
+
+    ``force_intensity`` skips the gate and pins the intensity/saturation path — the
+    retry for when the auto-selected style filter blanks a whole grid.
+    """
+    intensity_keep = _printed_mask(intensities, saturations)
+    if force_intensity or not style_model_available():
+        if not force_intensity and stats is not None:
+            stats["style_missing"] = True
+        if stats is not None:
+            stats["path"] = "intensity"
+        return intensity_keep
+
+    style_keep = _style_keep([style_score(g) for g in glyphs],
+                             [stroke_width(g) for g in glyphs])
+    sdrop = style_keep.count(False)
+    if sdrop == 0:  # no handwriting detected -> keep all (ignore a lone intensity split)
+        if stats is not None:
+            stats["path"] = "none"
+        return [True] * len(glyphs)
+    idrop = intensity_keep.count(False)
+    use_style = sdrop >= STYLE_OVER_INTENSITY * idrop and (sdrop - idrop) >= STYLE_DROP_MARGIN
+    if stats is not None:
+        stats["path"] = "style" if use_style else "intensity"
+    return style_keep if use_style else intensity_keep
+
+
+def iter_cells(warped: np.ndarray, color_warped: np.ndarray | None = None,
+               stats: dict | None = None, force_intensity: bool = False):
     """Yield (index 0–80, glyph mask or None) for all 81 cells.
 
-    A ``None`` glyph means the cell is empty. With ``printed_only`` (needs
-    ``color_warped``), handwritten answers are returned as ``None`` so only printed
-    givens survive: light pencil via intensity, colored ink via saturation, and — for
-    black-and-white scans where neither fires — handwritten *shape* via the style model
-    (``use_style``).
+    A ``None`` glyph means the cell is empty *or* a handwritten answer: only printed
+    givens survive. Light pencil is dropped via intensity, colored ink via saturation,
+    and dark B&W handwriting via the style model — the filter is auto-selected per grid
+    (see ``_select_keep``). ``color_warped`` is required for the saturation cue;
+    ``force_intensity`` pins the intensity/saturation path (used as a retry when the
+    auto-selected style filter blanks a whole grid).
 
     When ``stats`` is given it is filled with ``filtered`` (cells dropped as handwritten)
-    so callers can report that filtering happened.
+    and ``path`` (which filter was used) so callers can report what happened.
     """
     eq = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(warped)
     binary = binarize(eq)
@@ -203,7 +249,7 @@ def iter_cells(warped: np.ndarray, printed_only: bool = False,
     # Features for printed/handwritten discrimination come from the *pre-CLAHE* warp,
     # since CLAHE destroys the absolute intensity that separates print from pencil.
     sat = (cv2.cvtColor(color_warped, cv2.COLOR_BGR2HSV)[:, :, 1]
-           if printed_only and color_warped is not None else None)
+           if color_warped is not None else None)
 
     bx = _ten_boundaries(lines.sum(axis=0))
     by = _ten_boundaries(lines.sum(axis=1))
@@ -219,7 +265,7 @@ def iter_cells(warped: np.ndarray, printed_only: bool = False,
             x1 = int(bx[col + 1] - cw * INSET)
             glyph = extract_glyph(clean[y0:y1, x0:x1])
             idx = row * 9 + col
-            if not printed_only or glyph is None:
+            if glyph is None:
                 cells.append((idx, glyph, 0.0, 0.0))
                 continue
             ink = glyph > 0
@@ -227,23 +273,11 @@ def iter_cells(warped: np.ndarray, printed_only: bool = False,
             ms = float(sat[y0:y1, x0:x1][ink].mean()) if sat is not None else 0.0
             cells.append((idx, glyph, mi, ms))
 
-    if printed_only:
-        present = [c for c in cells if c[1] is not None]
-        # Two regimes: shape (style) for B&W scans where dark handwriting matches print
-        # in intensity *and* hue (and JPEG chroma fringing makes saturation unreliable);
-        # intensity+saturation for pencil / colored ink. They conflict, so pick one.
-        if use_style and style_model_available():
-            keep = _style_keep([style_score(c[1]) for c in present],
-                               [stroke_width(c[1]) for c in present])
-        else:
-            if use_style and stats is not None:
-                stats["style_missing"] = True  # fall back to intensity/saturation
-            keep = _printed_mask([c[2] for c in present], [c[3] for c in present])
-        drop = {present[i][0] for i in range(len(present)) if not keep[i]}
-        if stats is not None:
-            stats["filtered"] = len(drop)
-        for idx, glyph, _, _ in cells:
-            yield idx, (None if idx in drop else glyph)
-    else:
-        for idx, glyph, _, _ in cells:
-            yield idx, glyph
+    present = [c for c in cells if c[1] is not None]
+    keep = _select_keep([c[1] for c in present], [c[2] for c in present],
+                        [c[3] for c in present], stats, force_intensity)
+    drop = {present[i][0] for i in range(len(present)) if not keep[i]}
+    if stats is not None:
+        stats["filtered"] = len(drop)
+    for idx, glyph, _, _ in cells:
+        yield idx, (None if idx in drop else glyph)

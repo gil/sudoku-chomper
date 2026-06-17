@@ -28,6 +28,10 @@ python -m sudoku_chomper IMAGE [--all] [--debug]
 
 - Prints one 81-char line per detected **unsolved** grid (top-to-bottom,
   left-to-right). An image may contain more than one puzzle.
+- Only **printed givens** are returned — handwritten / penciled-in answers are
+  dropped automatically. The filter is auto-selected per grid: intensity + saturation
+  for pencil and colored ink (a no-op on clean grids), or the style model for
+  black-and-white scans where dark handwriting matches print in tone and hue.
 - `--all` — also print fully-filled grids (e.g. printed solution grids), normally
   suppressed.
 - `--debug` — dump warped grids and per-cell crops to a temp dir for tuning.

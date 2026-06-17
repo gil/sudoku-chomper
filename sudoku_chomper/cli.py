@@ -20,12 +20,12 @@ MIN_CLUES = 17  # fewest givens a proper Sudoku can have; filters false-positive
 MAX_CONFLICTS = 10  # above this a "grid" is a page frame / unrecoverable warp, not a puzzle
 
 
-def grid_to_string(warped: np.ndarray, debug_dir: str | None = None, idx: int = 0,
-                   printed_only: bool = False, color_warped: np.ndarray | None = None,
-                   use_style: bool = False, stats: dict | None = None) -> str:
+def grid_to_string(warped: np.ndarray, color_warped: np.ndarray | None = None,
+                   debug_dir: str | None = None, idx: int = 0,
+                   stats: dict | None = None, force_intensity: bool = False) -> str:
     digits = ["0"] * 81
-    for i, glyph in iter_cells(warped, printed_only=printed_only,
-                               color_warped=color_warped, use_style=use_style, stats=stats):
+    for i, glyph in iter_cells(warped, color_warped=color_warped, stats=stats,
+                               force_intensity=force_intensity):
         if glyph is not None:
             d = predict_glyph(glyph)
             if d:
@@ -37,44 +37,37 @@ def grid_to_string(warped: np.ndarray, debug_dir: str | None = None, idx: int = 
     return "".join(digits)
 
 
-def extract(path: str, include_all: bool = False, debug: bool = False,
-            printed_only: bool = False, use_style: bool = False) -> list[str]:
-    printed_only = printed_only or use_style  # style filtering needs the printed-only path
+def extract(path: str, include_all: bool = False, debug: bool = False) -> list[str]:
     image = load_image(path)
-    grids = find_grids(image, return_color=printed_only)
+    grids = find_grids(image, return_color=True)
 
     debug_dir = None
     if debug:
         debug_dir = tempfile.mkdtemp(prefix="sudoku_chomper_")
         print(f"# debug crops -> {debug_dir}", file=sys.stderr)
 
-    results = _scan(grids, path, include_all, debug_dir, printed_only, use_style)
-    if not results and use_style:
-        # --use-style gives cleaner glyphs but sometimes drops a whole grid the
-        # intensity/saturation path would have caught; retry without it.
-        print(f"# warning [{path}]: --use-style found no puzzle; "
-              "falling back to --printed-only (may include a few handwritten cells)",
-              file=sys.stderr)
-        results = _scan(grids, path, include_all, debug_dir, printed_only, use_style=False)
+    results = _scan(grids, path, include_all, debug_dir, force_intensity=False)
+    if not results:
+        # The auto-selected style filter can drop a whole grid the intensity/saturation
+        # path would have caught; retry pinned to intensity (may include a few
+        # handwritten cells, but a recoverable puzzle beats none).
+        results = _scan(grids, path, include_all, debug_dir, force_intensity=True)
     return results
 
 
 def _scan(grids, path: str, include_all: bool, debug_dir: str | None,
-          printed_only: bool, use_style: bool) -> list[str]:
+          force_intensity: bool) -> list[str]:
     results: list[str] = []
-    for idx, grid in enumerate(grids):
-        warped, color_warped = grid if printed_only else (grid, None)
+    for idx, (warped, color_warped) in enumerate(grids):
         stats: dict = {}
-        puzzle = grid_to_string(warped, debug_dir, idx, printed_only, color_warped,
-                                use_style, stats)
+        puzzle = grid_to_string(warped, color_warped, debug_dir, idx, stats,
+                                force_intensity)
         if stats.get("style_missing"):
-            print(f"# warning [{path}]: --use-style but no style model; "
-                  "fell back to intensity/saturation. Run: "
-                  "python -m sudoku_chomper.train_style", file=sys.stderr)
+            print(f"# warning [{path}]: no style model; using intensity/saturation only. "
+                  "Run: python -m sudoku_chomper.train_style", file=sys.stderr)
         if stats.get("filtered"):
-            mode = "--use-style" if use_style and not stats.get("style_missing") else "--printed-only"
             print(f"# note [{path}]: dropped {stats['filtered']} handwritten cell(s) "
-                  f"from grid {idx} ({mode})", file=sys.stderr)
+                  f"from grid {idx} ({stats.get('path', 'intensity')} filter)", file=sys.stderr)
         n = validate.filled_count(puzzle)
         if n < MIN_CLUES:
             continue  # not a plausible Sudoku grid
@@ -97,19 +90,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("image", help="path to the image file")
     parser.add_argument("--all", action="store_true", help="also print fully-solved grids")
     parser.add_argument("--debug", action="store_true", help="dump warped grids / cell crops")
-    parser.add_argument("--printed-only", action="store_true",
-                        help="keep only printed givens, ignore handwritten answers")
-    parser.add_argument("--use-style", action="store_true",
-                        help="(experimental) also drop dark handwriting by glyph shape "
-                             "via the style model; implies --printed-only")
     parser.add_argument("--render-image", nargs="?", const="", metavar="OUT",
                         help="also save each extracted puzzle as a clean digital grid "
                              "image (OUT_sudoku001.ext, ...); defaults to the input image path")
     args = parser.parse_args(argv)
 
-    results = extract(args.image, include_all=args.all, debug=args.debug,
-                      printed_only=args.printed_only or args.use_style,
-                      use_style=args.use_style)
+    results = extract(args.image, include_all=args.all, debug=args.debug)
     if not results:
         print("# no Sudoku grid detected", file=sys.stderr)
         return 1

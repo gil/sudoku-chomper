@@ -103,24 +103,25 @@ def test_output_is_valid_sudoku_shape(name):
         assert set(puzzle) <= set("0123456789")
 
 
-# --printed-only: filled-in books where only the printed givens should survive.
-# Tier 1 (light pencil) and Tier 2 (blue ink) are handled by the intensity +
-# saturation heuristic. Tier 3 (dark-pen handwriting: dirty_02/03/04) is a known
-# limit — the marks are as dark and achromatic as print — and is not asserted.
+# Filled-in book pages: only the printed givens should survive, with no flag — the
+# filter is always on and auto-selects per grid. Tier 1 (light pencil) and Tier 2
+# (blue ink) are handled by the intensity + saturation path. Tier 3 (dark-pen
+# handwriting: dirty_02/03/04) is a known limit — the marks are as dark and achromatic
+# as print — and is not asserted.
 
 def test_printed_only_light_pencil():
     """dirty_01 (= old page_018): bold printed givens, faint gray pencil answers.
 
     r6c7 = printed 9 the pre-quantization-fix path dropped (verified on the scan).
     """
-    assert extract(s("dirty_01.jpg"), printed_only=True) == [
+    assert extract(s("dirty_01.jpg")) == [
         "000078002006300007530000060001000020005080600040000900080000074400002300100760000"
     ]
 
 
 def test_printed_only_pencil_dirty_06():
     """r5c2 = printed 4 the pre-quantization-fix path dropped (verified on the scan)."""
-    assert extract(s("dirty_06.jpg"), printed_only=True) == [
+    assert extract(s("dirty_06.jpg")) == [
         "450000006000020004009800120070008000040000090000900070025004700700050000100000069"
     ]
 
@@ -128,7 +129,7 @@ def test_printed_only_pencil_dirty_06():
 def test_printed_only_pencil_dirty_07():
     """r2c1 = printed 7 and r9c2 = printed 4 the pre-quantization-fix path dropped
     (confirmed by the labeled rescan of the same page, the 000002…jpg sample)."""
-    assert extract(s("dirty_07.jpg"), printed_only=True) == [
+    assert extract(s("dirty_07.jpg")) == [
         "000002080705000400020600090500060200000408000009030005080001030006000708040300000"
     ]
 
@@ -139,7 +140,7 @@ def test_printed_only_blue_ink():
     r3c8 was a faint blue 5 (saturation 37, below the filter) leaking through as a
     misread 4; the intensity split now catches it.
     """
-    assert extract(s("dirty_05.png"), printed_only=True) == [
+    assert extract(s("dirty_05.png")) == [
         "500040007082900000040600100018500000600020003000003690001009060000005480200010005"
     ]
 
@@ -150,23 +151,30 @@ def test_printed_only_pencil_puzzle_8():
     Hardest intensity case so far: the darkest pencil glyph sits 0.5 gray levels
     above the lightest printed given.
     """
-    assert extract(s("850000001000005306040006900017009000000000000000300870008700040602100000100000035.jpg"),
-                   printed_only=True) == [
+    assert extract(s("850000001000005306040006900017009000000000000000300870008700040602100000100000035.jpg")) == [
         "850000001000005306040006900017009000000000000000300870008700040602100000100000035"
     ]
 
 
 def test_printed_only_pencil_puzzle_13():
     """Rescan of the dirty_07 page (Puzzle 13); filename is the labeled truth."""
-    assert extract(s("000002080705000400020600090500060200000408000009030005080001030006000708040300000.jpg"),
-                   printed_only=True) == [
+    assert extract(s("000002080705000400020600090500060200000408000009030005080001030006000708040300000.jpg")) == [
         "000002080705000400020600090500060200000408000009030005080001030006000708040300000"
     ]
 
 
-def test_printed_only_leaves_default_untouched():
-    """Without the flag a fully-filled scan still reads as solved -> skipped (no --all)."""
-    assert extract(s("dirty_01.jpg")) == []
+def test_printed_only_pencil_puzzle_7():
+    """Filled book page (Puzzle 7), faint pencil answers; filename is the labeled truth."""
+    assert extract(s("098000004000930008000007000009604000750000041000503600000100000600095000300000480.jpg")) == [
+        "098000004000930008000007000009604000750000041000503600000100000600095000300000480"
+    ]
+
+
+def test_filled_page_returns_givens_not_solved():
+    """A fully filled scan now yields its printed givens (handwriting dropped), not []."""
+    assert extract(s("dirty_01.jpg")) == [
+        "000078002006300007530000060001000020005080600040000900080000074400002300100760000"
+    ]
 
 
 # _style_keep gate behavior (model-free): the stroke-width fusion must only fire when

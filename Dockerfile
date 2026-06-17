@@ -27,8 +27,9 @@ COPY sudoku_chomper ./sudoku_chomper
 # Build models/digit_svm.joblib into the image using the installed fonts.
 RUN python -m sudoku_chomper.train
 
-# Build models/style_svm.joblib (printed vs handwritten, for --use-style). Needs the
-# labeled REAL_SAMPLES scans (allowed past .dockerignore) and downloads MNIST.
+# Build models/style_svm.joblib (printed vs handwritten; the handwriting detector that
+# gates filtering). Needs the labeled REAL_SAMPLES scans (allowed past .dockerignore)
+# and downloads MNIST.
 COPY sample ./sample
 RUN python -m sudoku_chomper.train_style
 
