@@ -106,7 +106,7 @@ def test_output_is_valid_sudoku_shape(name):
 # Filled-in book pages: only the printed givens should survive, with no flag — the
 # filter is always on and auto-selects per grid. Tier 1 (light pencil) and Tier 2
 # (blue ink) are handled by the intensity + saturation path. Tier 3 (dark-pen
-# handwriting: dirty_02/03/04) is a known limit — the marks are as dark and achromatic
+# handwriting: dirty_03/04) is a known limit — the marks are as dark and achromatic
 # as print — and is not asserted.
 
 def test_printed_only_light_pencil():
@@ -167,6 +167,55 @@ def test_printed_only_pencil_puzzle_7():
     """Filled book page (Puzzle 7), faint pencil answers; filename is the labeled truth."""
     assert extract(s("098000004000930008000007000009604000750000041000503600000100000600095000300000480.jpg")) == [
         "098000004000930008000007000009604000750000041000503600000100000600095000300000480"
+    ]
+
+
+def test_printed_only_dark_pen_dirty_02():
+    """Dark-pen B&W scan, read exactly by the style filter (truth = the
+    train_style.REAL_SAMPLES label). Only works since the saturation cluster split:
+    the old absolute cut dropped half the glyphs as chroma fringing before the style
+    path could see them."""
+    assert extract(s("dirty_02.png")) == [
+        "000002503031000008024051000000017065260000047710560000000680290400000830603400000"
+    ]
+
+
+# Tinted (aged) book pages: the tan paper lifts every glyph's mean saturation past any
+# absolute colored-ink cut, so saturation is clustered per page (SAT_GAP) instead.
+# os* = pencil answers, oos* = red-pen answers; os001/oos001, os002/oos002 and
+# os003/oos004 are scans of the same book pages.
+
+def test_tinted_page_pencil_os001():
+    assert extract(s("os001.jpg")) == [
+        "026000810300708006400050007050107090003905100040302050100030002500204009038000460"
+    ]
+
+
+def test_tinted_page_red_pen_oos001():
+    """Same page as os001 answered in red pen — saturation must drop the pen but keep
+    the print, which sits well above 50 mean saturation on this paper."""
+    assert extract(s("oos001.jpg")) == [
+        "026000810300708006400050007050107090003905100040302050100030002500204009038000460"
+    ]
+
+
+def test_tinted_page_pencil_os002():
+    assert extract(s("os002.jpg")) == [
+        "063002410400508007800103006987000140000030000024000695700201004600309001018400730"
+    ]
+
+
+def test_tinted_page_scan_pairs_agree():
+    """Independent scans of one page (pencil vs red pen) must extract identically."""
+    assert extract(s("oos002.jpg")) == extract(s("os002.jpg"))
+    assert extract(s("oos004.jpg")) == extract(s("os003.jpg"))
+
+
+def test_tinted_page_unfilled():
+    """Clean unfilled page from the same tinted-paper book; the old absolute
+    saturation cut dropped all 27 printed givens as colored ink."""
+    assert extract(s("not-det.jpg")) == [
+        "040100700800050030009000005070001000300060008000400090500000200010030006004008070"
     ]
 
 

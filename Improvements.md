@@ -196,7 +196,13 @@ thresholds, alongside the existing gate constants.
 
 - **Intensity + saturation path** (`_printed_mask`, Tiers 1–2). Each glyph is scored on
   the **pre-CLAHE** warp (CLAHE destroys absolute intensity):
-  - **Saturation** filter drops colored ink (`SAT_THRESH`).
+  - **Saturation** filter drops colored ink. This is a per-page cluster split, not an
+    absolute cut: an Otsu split over the glyph saturations drops the high cluster only
+    when the cluster gap clears `SAT_GAP` and the high cluster really is colored
+    (`SAT_THRESH`). Tinted (aged) paper lifts every glyph's mean saturation together.
+    Black print on the tan `os*`/`oos*` book pages measures 55–102, above colored ink
+    on white paper, so the old absolute `> 50` cut blanked those grids entirely
+    (fixed 2026-07).
   - **Adaptive intensity split**: 1-D Otsu over the grid's glyph intensities, drop the
     light (pencil) cluster — only when the dark/light cluster gap clears `PENCIL_GAP`,
     so a fully-printed grid is kept whole.

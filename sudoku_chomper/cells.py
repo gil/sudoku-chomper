@@ -22,7 +22,10 @@ from .recognize import (
 INSET = 0.06  # fraction of each cell trimmed inside its boundaries before glyph search
 
 # printed/handwritten discrimination thresholds
-SAT_THRESH = 50         # mean HSV saturation above this = colored ink (pen), not print
+SAT_THRESH = 50         # min mean saturation of the high cluster before it counts as
+                        # colored ink — an achromatic page never crosses this
+SAT_GAP = 35            # min colored/achromatic saturation-cluster gap before trusting
+                        # a split; tinted paper lifts every glyph together (one cluster)
 PENCIL_GAP = 35         # min dark/light intensity-cluster gap before trusting a split
 STYLE_GAP = 0.35        # min printed/handwritten style-score cluster gap before splitting
                         # (style_score has a per-scan offset, so the cut is adaptive)
@@ -101,16 +104,37 @@ def _ten_boundaries(profile: np.ndarray) -> list[float]:
     return even
 
 
+def _achromatic_mask(saturations: list[float]) -> list[bool]:
+    """True where a glyph's ink is achromatic (print-compatible).
+
+    Saturation is judged per page, not against an absolute cut: tinted (aged) paper
+    lifts every glyph's mean saturation together, so black print on a tan page can
+    measure well above colored ink on a white one. An Otsu split drops the high
+    cluster only when it is clearly separated (``SAT_GAP`` — one ink source forms a
+    single tight cluster) *and* genuinely colored (``SAT_THRESH``).
+    """
+    if len(saturations) < 4:
+        return [True] * len(saturations)
+    vals = np.array(saturations, np.uint8)
+    thr, _ = cv2.threshold(vals.reshape(-1, 1), 0, 255,
+                           cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    low, high = vals[vals <= thr], vals[vals > thr]
+    if (low.size and high.size and (high.mean() - low.mean()) >= SAT_GAP
+            and high.mean() >= SAT_THRESH):
+        return (vals <= thr).tolist()
+    return [True] * len(saturations)
+
+
 def _printed_mask(intensities: list[float], saturations: list[float]) -> list[bool]:
     """Pick which glyphs are printed (dark, achromatic ink) vs handwritten.
 
-    Colored ink (high saturation) is dropped outright; among the achromatic remainder
-    a 1-D Otsu split on intensity drops the light (pencil) cluster, but only when the
-    two clusters are clearly separated — a fully-printed grid is one tight cluster and
-    must be kept whole.
+    Colored ink (the separated high-saturation cluster) is dropped outright; among
+    the achromatic remainder a 1-D Otsu split on intensity drops the light (pencil)
+    cluster, but only when the two clusters are clearly separated — a fully-printed
+    grid is one tight cluster and must be kept whole.
     """
     n = len(intensities)
-    achromatic = [s < SAT_THRESH for s in saturations]
+    achromatic = _achromatic_mask(saturations)
 
     inten = [intensities[i] for i in range(n) if achromatic[i]]
     keep_dark = [True] * len(inten)

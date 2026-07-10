@@ -86,7 +86,8 @@ straight through (`IMAGE [--all] [--debug]`).
 
 - **Digital screenshot, printed book scans, two-puzzle page** — exact.
 - **Filled-in book pages** — only the printed givens are returned; light-pencil and
-  colored-ink answers are dropped exactly. Dark-pen B&W handwriting is the known hard
+  colored-ink answers are dropped exactly, including on tinted (aged) paper where the
+  page tint lifts every glyph's saturation. Dark-pen B&W handwriting is the known hard
   limit (as dark and achromatic as print).
 - **Newspaper photos** — all grids detected and mostly read; faint print, perspective
   skew, and 3/8/9 ambiguity cause occasional cell errors, surfaced by the validity
