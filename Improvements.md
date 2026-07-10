@@ -238,7 +238,9 @@ thresholds, alongside the existing gate constants.
   the saturation filter would wrongly drop the printed givens.
 - **Style model required.** With no `style_svm.joblib`, `_select_keep` can't run the
   detector and falls back to intensity-only (warns on stderr) — which false-fires on
-  clean grids. The Docker build and Setup both build it.
+  clean grids. Setup builds it; the Docker image copies the host-trained models
+  (in-container training used the container's fonts and misread noisy scans,
+  so since 2026-07 the build requires pre-trained models).
 - **Notice**: when filtering drops any cell, `cli.extract` prints a
   `# note … dropped N handwritten cell(s) … (<path> filter)` to stderr (via the `stats`
   dict threaded through `iter_cells`, which also records the selected path). Output is

@@ -48,11 +48,14 @@ misreads) are reported on stderr as `# warning ...` without blocking output.
 
 ## Docker
 
-No local Python/OpenCV needed. The image installs the dependencies and bakes both
-trained models (digit + style) in at build time (using fonts installed in the
-container).
+The image copies your locally trained models instead of training its own, so
+container detection matches the host exactly. (Training inside the image used the
+container's fonts, which misread noisy scans the host models got right.)
 
 ```bash
+# Train the models first (once, see Setup); the build fails without them:
+python -m sudoku_chomper.train && python -m sudoku_chomper.train_style
+
 docker build --progress=plain --no-cache -t sudoku-chomper .
 
 # Mount the folder holding your images, then pass a container-side path:
