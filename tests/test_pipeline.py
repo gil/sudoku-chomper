@@ -226,6 +226,21 @@ def test_filled_page_returns_givens_not_solved():
     ]
 
 
+# Four scans of one tinted book page (Puzzle 28): twins 1/3 are fully answered in
+# red ink, twins 2/4 partially in pencil, and twins 2/4 carry stray pencil strokes
+# crossing the grid border (the appendage-stripping path in detect). All four must
+# reduce to the same printed givens. r4c9 holds only handwriting in every scan (a
+# red 7 in twins 1/3; in twins 2/4 the solver wrote a wrong pencil 5 there), so it
+# is not a printed given despite the red version looking print-dark.
+
+TWINS_GIVENS = "030050000900301800004000070080024900010000030007960040050000300006405001000070060"
+
+
+@pytest.mark.parametrize("name", ["twin-1.png", "twin-2.png", "twin-3.jpg", "twin-4.jpg"])
+def test_twin_scans_agree(name):
+    assert extract(s(name)) == [TWINS_GIVENS]
+
+
 # _style_keep gate behavior (model-free): the stroke-width fusion must only fire when
 # the grid really holds two ink sources.
 

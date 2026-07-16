@@ -66,8 +66,36 @@ def _square_candidates(mask: np.ndarray, img_area: float) -> list[np.ndarray]:
             continue
         (_, _), (w, h), _ = cv2.minAreaRect(c)
         if min(w, h) == 0 or not 0.7 <= w / h <= 1.4:  # must be roughly square
+            out += _stripped_squares(mask.shape, c, img_area)
             continue
         quad = _quad_from_contour(c)
+        if quad is not None:
+            out.append(quad)
+    return out
+
+
+def _stripped_squares(shape: tuple, c: np.ndarray, img_area: float) -> list[np.ndarray]:
+    """Recover a grid whose contour merged with a stray pen/pencil stroke.
+
+    A stroke touching the border drags the contour's bounding box out of square.
+    Filling the contour and opening it (kernel scaled to the contour size) shears
+    off such thin appendages, letting the square grid body re-emerge; anything
+    still non-square (e.g. an actual page frame) yields no candidates.
+    """
+    filled = np.zeros(shape, np.uint8)
+    cv2.drawContours(filled, [c], -1, 255, cv2.FILLED)
+    k = max(3, int(np.sqrt(cv2.contourArea(c)) * 0.02) | 1)
+    opened = cv2.morphologyEx(filled, cv2.MORPH_OPEN,
+                              cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+    sub, _ = cv2.findContours(opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out: list[np.ndarray] = []
+    for s in sub:
+        if cv2.contourArea(s) < 0.03 * img_area:
+            continue
+        (_, _), (w, h), _ = cv2.minAreaRect(s)
+        if min(w, h) == 0 or not 0.7 <= w / h <= 1.4:
+            continue
+        quad = _quad_from_contour(s)
         if quad is not None:
             out.append(quad)
     return out

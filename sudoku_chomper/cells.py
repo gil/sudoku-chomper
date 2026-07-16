@@ -175,37 +175,51 @@ def _kmeans2(values) -> np.ndarray:
     return np.abs(v - c1) < np.abs(v - c0)
 
 
-def _style_keep(scores: list[float], widths: list[float]) -> list[bool]:
-    """Keep the printed cluster using stroke width fused with the style score.
+def _width_split(scores: list[float], widths: list[float]) -> np.ndarray | None:
+    """Thick-stroke cluster mask, or ``None`` when the grid shows one ink source.
 
     Print and handwriting on one page come from different ink sources, so their
     stroke widths form two clusters. The split only fires when both gates pass:
     the thick/thin ratio clears ``SW_RATIO_GATE`` (a fully-printed grid is one tight
     cluster) *and* the thin cluster also style-scores more handwritten by
     ``STYLE_AGREE`` (warped or noisy print can vary in width, but then the two width
-    clusters look equally printed to the style model). When both fire, glyphs are
-    split by 2-means on ``z(width) - z(score)`` (printed = thicker strokes + lower
-    style score) — the z-scoring self-centers per grid, which the raw ``style_score``
-    (per-scan offset) cannot do.
-
-    The gates are the sole trigger: without them the style score alone false-splits
-    clean grids whose glyphs the model finds unfamiliar (e.g. themed digital fonts).
-    Once fired, the style score's largest-gap cut (``STYLE_GAP``) also applies on
-    top — on a scan the model knows it removes the handwriting the width fusion lets
-    through, and on an unseen scan with no clear gap it is a no-op.
+    clusters look equally printed to the style model).
     """
-    if len(scores) < 4:
-        return [True] * len(scores)
-    keep = np.ones(len(scores), bool)
     w = np.asarray(widths, np.float64)
     sc = np.asarray(scores, np.float64)
     hi = _kmeans2(w)
     if (hi.any() and not hi.all()
             and w[hi].mean() >= SW_RATIO_GATE * w[~hi].mean()
             and sc[~hi].mean() - sc[hi].mean() >= STYLE_AGREE):
+        return hi
+    return None
+
+
+def _style_keep(scores: list[float], widths: list[float]) -> list[bool]:
+    """Keep the printed cluster using stroke width fused with the style score.
+
+    The width-cluster gates (``_width_split``) are the sole trigger: without them
+    the style score alone false-splits clean grids whose glyphs the model finds
+    unfamiliar (e.g. themed digital fonts). Once fired, the thin-stroke cluster is
+    dropped outright (it is the other ink source — a handwritten glyph whose style
+    score happens to look printed must not be rescued), then glyphs are further
+    split by 2-means on ``z(width) - z(score)`` (printed = thicker strokes + lower
+    style score) — the z-scoring self-centers per grid, which the raw ``style_score``
+    (per-scan offset) cannot do. The style score's largest-gap cut (``STYLE_GAP``)
+    also applies on top — on a scan the model knows it removes the handwriting the
+    width fusion lets through, and on an unseen scan with no clear gap it is a no-op.
+    """
+    if len(scores) < 4:
+        return [True] * len(scores)
+    keep = np.ones(len(scores), bool)
+    hi = _width_split(scores, widths)
+    if hi is not None:
+        w = np.asarray(widths, np.float64)
+
         def z(v):
             v = np.asarray(v, np.float64)
             return (v - v.mean()) / (v.std() + 1e-9)
+        keep &= hi
         keep &= _kmeans2(z(w) - z(scores))
         s = sorted(scores)
         gap, i = max((s[k + 1] - s[k], k) for k in range(len(s) - 1))
@@ -238,8 +252,9 @@ def _select_keep(glyphs: list, intensities: list[float], saturations: list[float
             stats["path"] = "intensity"
         return intensity_keep
 
-    style_keep = _style_keep([style_score(g) for g in glyphs],
-                             [stroke_width(g) for g in glyphs])
+    scores = [style_score(g) for g in glyphs]
+    widths = [stroke_width(g) for g in glyphs]
+    style_keep = _style_keep(scores, widths)
     sdrop = style_keep.count(False)
     if sdrop == 0:  # no handwriting detected -> keep all (ignore a lone intensity split)
         if stats is not None:
@@ -249,7 +264,15 @@ def _select_keep(glyphs: list, intensities: list[float], saturations: list[float
     use_style = sdrop >= STYLE_OVER_INTENSITY * idrop and (sdrop - idrop) >= STYLE_DROP_MARGIN
     if stats is not None:
         stats["path"] = "style" if use_style else "intensity"
-    return style_keep if use_style else intensity_keep
+    if use_style:
+        return style_keep
+    # Handwriting is confirmed, so the thin-stroke cluster is the other ink source:
+    # drop it even where intensity kept it (a firmly-drawn pencil stroke can measure
+    # as dark as print, but its width can't match).
+    hi = _width_split(scores, widths)
+    if hi is not None:
+        return [k and h for k, h in zip(intensity_keep, hi)]
+    return intensity_keep
 
 
 def iter_cells(warped: np.ndarray, color_warped: np.ndarray | None = None,
