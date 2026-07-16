@@ -94,10 +94,16 @@ def _scan(grids, path: str, include_all: bool, debug_dir: str | None,
 
 
 def _implies_handwriting(puzzle: str, include_all: bool) -> bool:
-    """True when the extraction can only be explained by unfiltered handwriting."""
-    if validate.filled_count(puzzle) == 81 and not include_all:
+    """True when the extraction can only be explained by unfiltered handwriting.
+
+    A conflict-free full grid is NOT proof: it can be a legitimately printed
+    solution grid, which the retry must leave alone.
+    """
+    n = validate.filled_count(puzzle)
+    conflicts = len(validate.conflicts(puzzle))
+    if n == 81 and conflicts >= 1 and not include_all:
         return True
-    return len(validate.conflicts(puzzle)) >= MAX_CONFLICTS
+    return conflicts >= MAX_CONFLICTS
 
 
 def main(argv: list[str] | None = None) -> int:

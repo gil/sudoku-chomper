@@ -263,6 +263,23 @@ def test_tinted_book_page_givens(name, expected):
     assert extract(s(name)) == [expected]
 
 
+# Kids' puzzle-book pages worked over in heavy dark pen: scratched-out corrections,
+# pencil candidate marks in cell corners, and pen pressed as dark as the print. The
+# warm scan cast makes the print itself the saturated cluster, so these exercise the
+# inverted saturation split (keep the saturated-and-dark side), the intensity-path
+# fall-through when handwriting is certain but the width gate stays silent, and the
+# photometric rescue's stroke-width route. Both extractions are conflict-free and
+# uniquely solvable. Known miss: the faint thin-stroke printed 5 at r1c7 of
+# scratchy_02 measures pen-like in every channel and stays dropped.
+
+@pytest.mark.parametrize("name,expected", [
+    ("scratchy_01.jpg", "800070030000005600004003200000050070100306008020040000006100400005800000070020003"),
+    ("scratchy_02.jpg", "670000028300000007000509000008007500003040100002900600000801000500000001890000035"),
+])
+def test_scratchy_pen_page_givens(name, expected):
+    assert extract(s(name)) == [expected]
+
+
 # _style_keep gate behavior (model-free): the stroke-width fusion must only fire when
 # the grid really holds two ink sources.
 
