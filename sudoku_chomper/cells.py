@@ -31,9 +31,21 @@ STYLE_GAP = 0.35        # min printed/handwritten style-score cluster gap before
                         # (style_score has a per-scan offset, so the cut is adaptive)
 SW_RATIO_GATE = 1.38    # min thick/thin stroke-width cluster ratio that signals two ink
                         # sources; fully-printed grids measure <= 1.31, mixed >= 1.45
+SW_RATIO_GATE_CONFIRMED = 1.2   # relaxed ratio gate for when handwriting is already
+                        # certain (the grid read full or self-conflicting, which no
+                        # printed puzzle can): thin-pen answers over print measure
+                        # 1.26+, while STYLE_AGREE still blocks one-ink grids
 STYLE_AGREE = 0.8       # the thin-stroke cluster must also style-score this much more
                         # handwritten on average, else the width split is warp/JPEG noise
                         # (clean grids <= +0.47, handwriting-bearing grids >= +1.44)
+
+# Photometric cross-check of the style path (print on one page = one ink + one
+# press, so kept glyphs form a tight intensity/saturation cluster the width-based
+# split never sees). Only trusted when the kept and dropped populations really
+# contrast — on B&W dark-pen scans both measure alike and the check stays silent.
+PHOTO_INTEN_GAP = 10    # min drop in darkness before photometrics are trusted
+PHOTO_SAT_GAP = 25      # min drop in saturation before photometrics are trusted
+PHOTO_TOL = 8           # per-glyph tolerance around the kept cluster's medians
 
 # Auto-select between the intensity/saturation filter and the style filter per grid.
 # Intensity is more accurate on pencil / colored-ink pages and no-ops on clean grids;
@@ -104,24 +116,31 @@ def _ten_boundaries(profile: np.ndarray) -> list[float]:
     return even
 
 
-def _achromatic_mask(saturations: list[float]) -> list[bool]:
+def _achromatic_mask(saturations: list[float], intensities: list[float]) -> list[bool]:
     """True where a glyph's ink is achromatic (print-compatible).
 
     Saturation is judged per page, not against an absolute cut: tinted (aged) paper
     lifts every glyph's mean saturation together, so black print on a tan page can
     measure well above colored ink on a white one. An Otsu split drops the high
     cluster only when it is clearly separated (``SAT_GAP`` — one ink source forms a
-    single tight cluster) *and* genuinely colored (``SAT_THRESH``).
+    single tight cluster) *and* genuinely colored (``SAT_THRESH``) *and* not darker
+    than the achromatic cluster: colored pigment always measures lighter than black
+    print (+44 gray levels and up on every colored-pen sample), while dark print
+    blended into tinted paper measures high-saturation *and dark* (-18 and below) —
+    dropping that cluster would throw away the givens themselves.
     """
     if len(saturations) < 4:
         return [True] * len(saturations)
     vals = np.array(saturations, np.uint8)
+    inten = np.array(intensities, np.float64)
     thr, _ = cv2.threshold(vals.reshape(-1, 1), 0, 255,
                            cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    low, high = vals[vals <= thr], vals[vals > thr]
-    if (low.size and high.size and (high.mean() - low.mean()) >= SAT_GAP
-            and high.mean() >= SAT_THRESH):
-        return (vals <= thr).tolist()
+    low, high = vals <= thr, vals > thr
+    if (low.any() and high.any()
+            and (vals[high].mean() - vals[low].mean()) >= SAT_GAP
+            and vals[high].mean() >= SAT_THRESH
+            and inten[high].mean() >= inten[low].mean()):
+        return low.tolist()
     return [True] * len(saturations)
 
 
@@ -134,7 +153,7 @@ def _printed_mask(intensities: list[float], saturations: list[float]) -> list[bo
     grid is one tight cluster and must be kept whole.
     """
     n = len(intensities)
-    achromatic = _achromatic_mask(saturations)
+    achromatic = _achromatic_mask(saturations, intensities)
 
     inten = [intensities[i] for i in range(n) if achromatic[i]]
     keep_dark = [True] * len(inten)
@@ -175,27 +194,46 @@ def _kmeans2(values) -> np.ndarray:
     return np.abs(v - c1) < np.abs(v - c0)
 
 
-def _width_split(scores: list[float], widths: list[float]) -> np.ndarray | None:
+def _width_split(scores: list[float], widths: list[float],
+                 ratio_gate: float = SW_RATIO_GATE) -> np.ndarray | None:
     """Thick-stroke cluster mask, or ``None`` when the grid shows one ink source.
 
     Print and handwriting on one page come from different ink sources, so their
     stroke widths form two clusters. The split only fires when both gates pass:
-    the thick/thin ratio clears ``SW_RATIO_GATE`` (a fully-printed grid is one tight
+    the thick/thin ratio clears ``ratio_gate`` (a fully-printed grid is one tight
     cluster) *and* the thin cluster also style-scores more handwritten by
     ``STYLE_AGREE`` (warped or noisy print can vary in width, but then the two width
     clusters look equally printed to the style model).
+
+    A few overwritten / scribbled cells can measure far thicker than either ink
+    source and hijack the thick center, leaving print in the thin cluster. When the
+    gates fail on such a tiny thick cluster, those outliers are peeled off, the rest
+    is reclustered and gated on its own, and the outliers rejoin the thick side
+    (whether ultra-thick cells are bold print or scribbled handwriting is left to
+    the callers' remaining cues).
     """
     w = np.asarray(widths, np.float64)
     sc = np.asarray(scores, np.float64)
     hi = _kmeans2(w)
-    if (hi.any() and not hi.all()
-            and w[hi].mean() >= SW_RATIO_GATE * w[~hi].mean()
+    if not hi.any() or hi.all():
+        return None
+    if (w[hi].mean() >= ratio_gate * w[~hi].mean()
             and sc[~hi].mean() - sc[hi].mean() >= STYLE_AGREE):
         return hi
+    if hi.sum() <= max(2, len(w) // 10):
+        rest = ~hi
+        inner = _kmeans2(w[rest])
+        if (inner.any() and not inner.all()
+                and w[rest][inner].mean() >= ratio_gate * w[rest][~inner].mean()
+                and sc[rest][~inner].mean() - sc[rest][inner].mean() >= STYLE_AGREE):
+            out = hi.copy()
+            out[rest] = inner
+            return out
     return None
 
 
-def _style_keep(scores: list[float], widths: list[float]) -> list[bool]:
+def _style_keep(scores: list[float], widths: list[float],
+                ratio_gate: float = SW_RATIO_GATE) -> list[bool]:
     """Keep the printed cluster using stroke width fused with the style score.
 
     The width-cluster gates (``_width_split``) are the sole trigger: without them
@@ -208,11 +246,15 @@ def _style_keep(scores: list[float], widths: list[float]) -> list[bool]:
     (per-scan offset) cannot do. The style score's largest-gap cut (``STYLE_GAP``)
     also applies on top — on a scan the model knows it removes the handwriting the
     width fusion lets through, and on an unseen scan with no clear gap it is a no-op.
+    The cut refines the width fusion's keep set, never overrides it: when print and
+    handwriting score-distributions overlap, the largest gap can sit *inside* the
+    print cluster, so a cut that would gut the kept set (keep under half of it) is
+    rejected as intra-print.
     """
     if len(scores) < 4:
         return [True] * len(scores)
     keep = np.ones(len(scores), bool)
-    hi = _width_split(scores, widths)
+    hi = _width_split(scores, widths, ratio_gate)
     if hi is not None:
         w = np.asarray(widths, np.float64)
 
@@ -223,13 +265,49 @@ def _style_keep(scores: list[float], widths: list[float]) -> list[bool]:
         keep &= _kmeans2(z(w) - z(scores))
         s = sorted(scores)
         gap, i = max((s[k + 1] - s[k], k) for k in range(len(s) - 1))
-        if gap >= STYLE_GAP:
-            keep &= np.asarray(scores) <= (s[i] + s[i + 1]) / 2
+        cutmask = np.asarray(scores) <= (s[i] + s[i + 1]) / 2
+        if gap >= STYLE_GAP and (keep & cutmask).sum() >= 0.5 * keep.sum():
+            keep &= cutmask
     return list(keep)
 
 
+def _photometric_refine(keep: list[bool], intensities: list[float],
+                        saturations: list[float], scores: list[float]) -> list[bool]:
+    """Cross-check the style path's split against the print's photometric signature.
+
+    Print on one page comes from one ink and one press, so the kept glyphs form a
+    tight (dark, saturated on tinted paper) cluster that the width-based split never
+    sees. A thin-stroke printed glyph lands in the thin width cluster and is lost,
+    while a pen glyph with a print-like shape sneaks in. When the kept and dropped
+    populations show real photometric contrast (``PHOTO_INTEN_GAP`` +
+    ``PHOTO_SAT_GAP`` — dark pen on a B&W scan measures like print and disables the
+    check), a dropped glyph sitting on the kept cluster's medians is rescued unless
+    the style model calls it handwritten, and a kept glyph far off the cluster is
+    vetoed regardless of its shape.
+    """
+    keep_arr = np.asarray(keep, bool)
+    if keep_arr.all() or not keep_arr.any():
+        return list(keep_arr)
+    inten = np.asarray(intensities, np.float64)
+    sat = np.asarray(saturations, np.float64)
+    ki, ks = np.median(inten[keep_arr]), np.median(sat[keep_arr])
+    di, ds = np.median(inten[~keep_arr]), np.median(sat[~keep_arr])
+    if (di - ki) < PHOTO_INTEN_GAP or (ks - ds) < PHOTO_SAT_GAP:
+        return list(keep_arr)
+    out = keep_arr.copy()
+    for j in range(len(out)):
+        if (not keep_arr[j] and abs(inten[j] - ki) <= PHOTO_TOL
+                and sat[j] >= ks - PHOTO_TOL and scores[j] <= 0):
+            out[j] = True
+        elif (keep_arr[j] and inten[j] - ki >= PHOTO_INTEN_GAP
+                and sat[j] <= ks - PHOTO_SAT_GAP):
+            out[j] = False
+    return list(out)
+
+
 def _select_keep(glyphs: list, intensities: list[float], saturations: list[float],
-                 stats: dict | None, force_intensity: bool) -> list[bool]:
+                 stats: dict | None, force_intensity: bool,
+                 assume_handwriting: bool = False) -> list[bool]:
     """Pick which present glyphs are printed givens, auto-selecting the filter.
 
     The style model's stroke-width gate is the handwriting *detector*: it stays silent
@@ -243,6 +321,10 @@ def _select_keep(glyphs: list, intensities: list[float], saturations: list[float
 
     ``force_intensity`` skips the gate and pins the intensity/saturation path — the
     retry for when the auto-selected style filter blanks a whole grid.
+    ``assume_handwriting`` relaxes the width-ratio gate to
+    ``SW_RATIO_GATE_CONFIRMED`` — the retry for when the extracted grid read full or
+    self-conflicting, which no printed puzzle can, so handwriting must be present
+    even if the standard gate missed it.
     """
     intensity_keep = _printed_mask(intensities, saturations)
     if force_intensity or not style_model_available():
@@ -252,9 +334,10 @@ def _select_keep(glyphs: list, intensities: list[float], saturations: list[float
             stats["path"] = "intensity"
         return intensity_keep
 
+    ratio_gate = SW_RATIO_GATE_CONFIRMED if assume_handwriting else SW_RATIO_GATE
     scores = [style_score(g) for g in glyphs]
     widths = [stroke_width(g) for g in glyphs]
-    style_keep = _style_keep(scores, widths)
+    style_keep = _style_keep(scores, widths, ratio_gate)
     sdrop = style_keep.count(False)
     if sdrop == 0:  # no handwriting detected -> keep all (ignore a lone intensity split)
         if stats is not None:
@@ -265,18 +348,19 @@ def _select_keep(glyphs: list, intensities: list[float], saturations: list[float
     if stats is not None:
         stats["path"] = "style" if use_style else "intensity"
     if use_style:
-        return style_keep
+        return _photometric_refine(style_keep, intensities, saturations, scores)
     # Handwriting is confirmed, so the thin-stroke cluster is the other ink source:
     # drop it even where intensity kept it (a firmly-drawn pencil stroke can measure
     # as dark as print, but its width can't match).
-    hi = _width_split(scores, widths)
+    hi = _width_split(scores, widths, ratio_gate)
     if hi is not None:
         return [k and h for k, h in zip(intensity_keep, hi)]
     return intensity_keep
 
 
 def iter_cells(warped: np.ndarray, color_warped: np.ndarray | None = None,
-               stats: dict | None = None, force_intensity: bool = False):
+               stats: dict | None = None, force_intensity: bool = False,
+               assume_handwriting: bool = False):
     """Yield (index 0–80, glyph mask or None) for all 81 cells.
 
     A ``None`` glyph means the cell is empty *or* a handwritten answer: only printed
@@ -284,7 +368,9 @@ def iter_cells(warped: np.ndarray, color_warped: np.ndarray | None = None,
     and dark B&W handwriting via the style model — the filter is auto-selected per grid
     (see ``_select_keep``). ``color_warped`` is required for the saturation cue;
     ``force_intensity`` pins the intensity/saturation path (used as a retry when the
-    auto-selected style filter blanks a whole grid).
+    auto-selected style filter blanks a whole grid); ``assume_handwriting`` relaxes
+    the handwriting detector's width gate (used as a retry when the grid read full or
+    self-conflicting, which no printed puzzle can).
 
     When ``stats`` is given it is filled with ``filtered`` (cells dropped as handwritten)
     and ``path`` (which filter was used) so callers can report what happened.
@@ -322,7 +408,8 @@ def iter_cells(warped: np.ndarray, color_warped: np.ndarray | None = None,
 
     present = [c for c in cells if c[1] is not None]
     keep = _select_keep([c[1] for c in present], [c[2] for c in present],
-                        [c[3] for c in present], stats, force_intensity)
+                        [c[3] for c in present], stats, force_intensity,
+                        assume_handwriting)
     drop = {present[i][0] for i in range(len(present)) if not keep[i]}
     if stats is not None:
         stats["filtered"] = len(drop)

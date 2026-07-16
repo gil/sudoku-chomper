@@ -241,6 +241,28 @@ def test_twin_scans_agree(name):
     assert extract(s(name)) == [TWINS_GIVENS]
 
 
+# Tinted book pages ("Puzzle N" series) answered in pencil, dark ballpoint, or blue
+# pen — several fully solved. They exercise: the darker-cluster veto in the
+# saturation split (dark print on tan paper measures high-saturation and must not be
+# dropped as colored ink), the relaxed width gate retried once a grid reads full or
+# self-conflicting, the outlier peel in the width clustering (scribbled-over cells),
+# and the photometric rescue/veto on the style path. Every extraction below is
+# conflict-free and uniquely solvable.
+
+@pytest.mark.parametrize("name,expected", [
+    ("why_no_01.jpg", "040509070206000104030000050300907002000040000700108003080000030109000807070206010"),
+    ("why_no_02.jpg", "000023000000900004018000005000006030070000020050100000900000860300007000000540000"),
+    ("why_no_03.jpg", "002000800030107090400006001056000020000090000070000450800300006090208070001000900"),
+    ("why_no_04.jpg", "000000700007008030090600200060400000008000500001009080002005070040900600003000000"),
+    ("why_no_05.jpg", "004090000000000860503001020000502900700000004005304000060800503021000000000140700"),
+    ("why_no_06.jpg", "000004310200810000700090000100000050063000840090000002000020009000053004054700000"),
+    ("why_no_07.jpg", "000970064000402005000050900120006080905000706080300041004030000500207000630014000"),
+    ("why_no_08.jpg", "300500840085006002090003006500600490000070000023004007400100080900700230056008001"),
+])
+def test_tinted_book_page_givens(name, expected):
+    assert extract(s(name)) == [expected]
+
+
 # _style_keep gate behavior (model-free): the stroke-width fusion must only fire when
 # the grid really holds two ink sources.
 

@@ -22,10 +22,12 @@ MAX_CONFLICTS = 10  # above this a "grid" is a page frame / unrecoverable warp, 
 
 def grid_to_string(warped: np.ndarray, color_warped: np.ndarray | None = None,
                    debug_dir: str | None = None, idx: int = 0,
-                   stats: dict | None = None, force_intensity: bool = False) -> str:
+                   stats: dict | None = None, force_intensity: bool = False,
+                   assume_handwriting: bool = False) -> str:
     digits = ["0"] * 81
     for i, glyph in iter_cells(warped, color_warped=color_warped, stats=stats,
-                               force_intensity=force_intensity):
+                               force_intensity=force_intensity,
+                               assume_handwriting=assume_handwriting):
         if glyph is not None:
             d = predict_glyph(glyph)
             if d:
@@ -65,6 +67,15 @@ def _scan(grids, path: str, include_all: bool, debug_dir: str | None,
         if stats.get("style_missing"):
             print(f"# warning [{path}]: no style model; using intensity/saturation only. "
                   "Run: python -m sudoku_chomper.train_style", file=sys.stderr)
+        if _implies_handwriting(puzzle, include_all):
+            # No printed puzzle reads full or self-conflicting, so the grid must hold
+            # handwriting the standard width gate missed (e.g. thin-pen answers close
+            # to the print's stroke width); retry with the relaxed gate.
+            retry_stats: dict = {}
+            retry = grid_to_string(warped, color_warped, debug_dir, idx, retry_stats,
+                                   force_intensity, assume_handwriting=True)
+            if not _implies_handwriting(retry, include_all):
+                puzzle, stats = retry, retry_stats
         if stats.get("filtered"):
             print(f"# note [{path}]: dropped {stats['filtered']} handwritten cell(s) "
                   f"from grid {idx} ({stats.get('path', 'intensity')} filter)", file=sys.stderr)
@@ -80,6 +91,13 @@ def _scan(grids, path: str, include_all: bool, debug_dir: str | None,
             print(f"# warning [{path}]: {msg} (possible OCR misread)", file=sys.stderr)
         results.append(puzzle)
     return results
+
+
+def _implies_handwriting(puzzle: str, include_all: bool) -> bool:
+    """True when the extraction can only be explained by unfiltered handwriting."""
+    if validate.filled_count(puzzle) == 81 and not include_all:
+        return True
+    return len(validate.conflicts(puzzle)) >= MAX_CONFLICTS
 
 
 def main(argv: list[str] | None = None) -> int:
